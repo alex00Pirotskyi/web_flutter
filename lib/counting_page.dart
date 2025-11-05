@@ -2,14 +2,14 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'app_data.dart';
 
-// A simple class to store our tap effect's position
+// TapEffect class (unchanged)
 class TapEffect {
   final Offset position;
   TapEffect({required this.position});
 }
 
 class CountingPage extends StatefulWidget {
-  final String mainKey; // e.g., "TAP" or "SWIPE"
+  final String mainKey;
   const CountingPage({super.key, required this.mainKey});
 
   @override
@@ -17,27 +17,26 @@ class CountingPage extends StatefulWidget {
 }
 
 class _CountingPageState extends State<CountingPage> {
-  // We need to keep track of which sub-key is currently selected
   String? _selectedSubKey;
-
-  // --- New state variables ---
   int _mousePressCount = 0;
   final List<TapEffect> _tapEffects = [];
-  // ---
 
-  // This handles all the new logic for taps
+  @override
+  void initState() {
+    super.initState();
+    final appData = context.read<AppData>();
+    final subKeys = appData.settingsData[widget.mainKey] ?? [];
+    if (subKeys.isNotEmpty) {
+      _selectedSubKey = subKeys.first;
+    }
+  }
+
   void _handlePageTap(PointerDownEvent event) {
-    // 1. Create the new effect
     final effect = TapEffect(position: event.localPosition);
-
     setState(() {
-      // 2. Increment counter
       _mousePressCount++;
-      // 3. Add effect to the list to be drawn
       _tapEffects.add(effect);
     });
-
-    // 4. Set a timer to remove the effect after a short time
     Future.delayed(const Duration(milliseconds: 500), () {
       if (mounted) {
         setState(() {
@@ -46,13 +45,47 @@ class _CountingPageState extends State<CountingPage> {
       }
     });
   }
+  
+  // --- 💡 MODIFIED: Alert Dialog for resetting CURRENT CATEGORY ---
+  void _showResetCategoryDialog(BuildContext context) {
+    final appData = context.read<AppData>();
+    final currentUser = appData.currentUser ?? "current user";
 
-  //
-  // --- 💡 THE MODIFICATION: Making buttons much shorter ---
-  //
+    showDialog(
+      context: context,
+      builder: (BuildContext dialogContext) {
+        return AlertDialog(
+          // 💡 Changed title
+          title: const Text('Reset Category Test?'),
+          // 💡 Changed content
+          content: Text(
+              'Are you sure you want to clear all results for "${widget.mainKey}" for $currentUser?'),
+          actions: [
+            TextButton(
+              child: const Text('Cancel'),
+              onPressed: () {
+                Navigator.of(dialogContext).pop();
+              },
+            ),
+            TextButton(
+              style: TextButton.styleFrom(foregroundColor: Colors.red),
+              child: const Text('Reset'),
+              onPressed: () {
+                // 💡 Call the correct function: clearCategoryResults
+                appData.clearCategoryResults(widget.mainKey);
+                Navigator.of(dialogContext).pop();
+                // We DON'T pop the page, we just stay here
+              },
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+
   Widget _buildNumberPad() {
     return Container(
-      // Reduced container padding
       padding: const EdgeInsets.fromLTRB(8.0, 8.0, 8.0, 4.0),
       decoration: BoxDecoration(
         color: Theme.of(context).colorScheme.surfaceVariant.withOpacity(0.5),
@@ -66,32 +99,29 @@ class _CountingPageState extends State<CountingPage> {
       child: GridView.builder(
         gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
           crossAxisCount: 5,
-          childAspectRatio: 4.5, // <-- 💡 KEY CHANGE: (Was 1.2) Makes buttons very short.
-          crossAxisSpacing: 4, // Reduced spacing
-          mainAxisSpacing: 4, // Reduced spacing
+          childAspectRatio: 2.5,
+          crossAxisSpacing: 4,
+          mainAxisSpacing: 4,
         ),
         itemCount: 10,
-        shrinkWrap: true, // Don't let the grid scroll
+        shrinkWrap: true,
         physics: const NeverScrollableScrollPhysics(),
         itemBuilder: (context, index) {
           final score = index + 1;
           return ElevatedButton(
-            // Disable button if no sub-key is selected
             onPressed: _selectedSubKey == null
                 ? null
                 : () {
-                    // Update the result in AppData
                     context.read<AppData>().updateResult(
                           widget.mainKey,
                           _selectedSubKey!,
                           score,
                         );
                   },
-            // Make button smaller
             style: ElevatedButton.styleFrom(
-              padding: EdgeInsets.zero, // Minimal padding
+              padding: EdgeInsets.zero,
               textStyle: const TextStyle(
-                fontSize: 12, // Small font
+                fontSize: 12,
                 fontWeight: FontWeight.bold,
               ),
             ),
@@ -104,17 +134,22 @@ class _CountingPageState extends State<CountingPage> {
 
   @override
   Widget build(BuildContext context) {
+    // 💡 Use context.watch() so the page rebuilds when results are cleared
     final appData = context.watch<AppData>();
-    // Get the list of sub-keys for this category (e.g., ["Left", "Right"])
     final subKeys = appData.settingsData[widget.mainKey] ?? [];
-    // Get the current results for this category to display them
-    final currentResults = appData.resultsData[widget.mainKey] ?? {};
+    final currentResults = appData.currentResultsData[widget.mainKey] ?? {};
 
     return Scaffold(
       appBar: AppBar(
-        title: Text(widget.mainKey), // Title is the category name
+        title: Text(widget.mainKey),
         backgroundColor: Theme.of(context).colorScheme.inversePrimary,
         actions: [
+          // 💡 MODIFIED Button
+          IconButton(
+            icon: const Icon(Icons.clear_all),
+            tooltip: 'Reset This Category', // 💡 Changed tooltip
+            onPressed: () => _showResetCategoryDialog(context), // 💡 Changed function
+          ),
           IconButton(
             icon: const Icon(Icons.refresh),
             tooltip: 'Reset Click Counter',
@@ -124,25 +159,22 @@ class _CountingPageState extends State<CountingPage> {
               });
             },
           ),
-          const SizedBox(width: 10), // Some spacing
+          const SizedBox(width: 10),
         ],
       ),
       body: Column(
         children: [
-          // --- 1. The main content area ---
           Expanded(
             child: Listener(
               onPointerDown: _handlePageTap,
               child: Stack(
                 fit: StackFit.expand,
                 children: [
-                  // --- This is all your main page content ---
                   SingleChildScrollView(
                     padding: const EdgeInsets.all(16.0),
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        // --- 1. The list of sub-key buttons ---
                         Text(
                           '1. Select an item to score:',
                           style: Theme.of(context).textTheme.titleLarge,
@@ -163,16 +195,13 @@ class _CountingPageState extends State<CountingPage> {
                             );
                           }).toList(),
                         ),
-
                         const Divider(height: 40),
-
-                        // --- 2. The list of current results ---
                         Text(
                           'Current Results for ${widget.mainKey}:',
                           style: Theme.of(context).textTheme.titleLarge,
                         ),
                         const SizedBox(height: 10),
-                        if (currentResults.isEmpty)
+                        if (currentResults.isEmpty) // This will now update on reset
                           const Text('No results yet.')
                         else
                           ...currentResults.entries.map((entry) {
@@ -188,42 +217,33 @@ class _CountingPageState extends State<CountingPage> {
                       ],
                     ),
                   ),
-
-                  // --- Floating Click Counter ---
                   Align(
-                    alignment: Alignment.topCenter, // Position at the top-center
+                    alignment: Alignment.topCenter,
                     child: IgnorePointer(
-                      // Clicks pass through this widget
                       child: Container(
-                        margin: const EdgeInsets.only(top: 20.0), // Space from app bar
+                        margin: const EdgeInsets.only(top: 20.0),
                         padding: const EdgeInsets.symmetric(
                             horizontal: 16, vertical: 8),
                         decoration: BoxDecoration(
-                          color: Colors.black
-                              .withOpacity(0.6), // Semi-transparent background
-                          borderRadius:
-                              BorderRadius.circular(20), // Rounded corners
+                          color: Colors.black.withOpacity(0.6),
+                          borderRadius: BorderRadius.circular(20),
                         ),
                         child: Text(
                           'Clicks: $_mousePressCount',
                           style: const TextStyle(
                             fontSize: 20,
                             fontWeight: FontWeight.bold,
-                            color: Colors.white, // White text
+                            color: Colors.white,
                           ),
                         ),
                       ),
                     ),
                   ),
-
-                  // --- This renders the tap effects ---
                   ..._tapEffects.map(
                     (effect) => Positioned(
-                      // Position the effect where the tap happened
-                      left: effect.position.dx - 12, // center the circle
-                      top: effect.position.dy - 12, // center the circle
+                      left: effect.position.dx - 12,
+                      top: effect.position.dy - 12,
                       child: IgnorePointer(
-                        // Clicks pass through this widget
                         child: Container(
                           width: 24,
                           height: 24,
@@ -235,13 +255,10 @@ class _CountingPageState extends State<CountingPage> {
                       ),
                     ),
                   ),
-                  // ---
                 ],
               ),
             ),
           ),
-
-          // --- 2. The number pad at the bottom ---
           _buildNumberPad(),
         ],
       ),

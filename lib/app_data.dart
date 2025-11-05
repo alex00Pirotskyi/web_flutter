@@ -1,68 +1,135 @@
 import 'package:flutter/foundation.dart';
 import 'dart:convert';
+import 'package:csv/csv.dart';
 
 class AppData extends ChangeNotifier {
-  // This holds your settings, e.g., {"TAP": ["bla", "bla2"], ...}
   Map<String, List<String>> _settingsData = {};
+  List<String> _users = [];
+  String? _currentUser;
+  Map<String, Map<String, Map<String, int>>> _allUserResults = {};
 
-  // This holds your results, e.g., {"TAP": {"bla": 6}, ...}
-  Map<String, Map<String, int>> _resultsData = {};
-
-  // "Getters" to allow other widgets to read the data
   Map<String, List<String>> get settingsData => _settingsData;
-  Map<String, Map<String, int>> get resultsData => _resultsData;
+  List<String> get users => _users;
+  String? get currentUser => _currentUser;
+  Map<String, Map<String, Map<String, int>>> get allUserResults =>
+      _allUserResults;
 
-  // --- 💡 MODIFIED FUNCTION ---
-  // This now parses JSON content passed to it from the file uploader
+  Map<String, Map<String, int>> get currentResultsData {
+    if (_currentUser == null) return {};
+    return _allUserResults[_currentUser] ?? {};
+  }
+
+  void setCurrentUser(String? userName) {
+    _currentUser = userName;
+    notifyListeners();
+  }
+
+  void addUser(String userName) {
+    if (userName.isEmpty || _users.contains(userName)) return;
+    _users.add(userName);
+    _allUserResults[userName] = {};
+    _currentUser = userName;
+    notifyListeners();
+  }
+
   void loadSettings(String jsonContent) {
     try {
-      // Decode the JSON string
       final Map<String, dynamic> newSettings = json.decode(jsonContent);
-
-      // Convert the dynamic map to the correct type
-      // This ensures that "TAP": ["val1", "val2"] is correctly parsed
       _settingsData = Map<String, List<String>>.from(
         newSettings.map(
-          (key, value) => MapEntry(
-            key,
-            // Ensure the value is treated as a list of strings
-            List<String>.from(value as List<dynamic>),
-          ),
+          (key, value) =>
+              MapEntry(key, List<String>.from(value as List<dynamic>)),
         ),
       );
 
-      // When we load new settings, we clear the old results
-      _resultsData = {};
-
-      // Tell all listening widgets (like your pages) to rebuild
+      _allUserResults.clear();
+      _currentUser = _users.isNotEmpty ? _users.first : null;
       notifyListeners();
     } catch (e) {
-      // Handle bad JSON
       debugPrint('Error loading settings JSON: $e');
-      // In a real app, you'd show a user-facing error here
     }
   }
 
-  // Clears all the results you've collected
-  void clearResults() {
-    _resultsData = {};
-    notifyListeners();
-  }
-
-  // Called from Page 2 to add a new count
   void updateResult(String mainKey, String subKey, int count) {
-    // Create the inner map if it doesn't exist
-    if (!_resultsData.containsKey(mainKey)) {
-      _resultsData[mainKey] = {};
+    if (_currentUser == null) return;
+    if (!_allUserResults.containsKey(_currentUser)) {
+      _allUserResults[_currentUser!] = {};
     }
-    // Add the count
-    _resultsData[mainKey]![subKey] = count;
+    if (!_allUserResults[_currentUser]!.containsKey(mainKey)) {
+      _allUserResults[_currentUser]![mainKey] = {};
+    }
+    _allUserResults[_currentUser]![mainKey]![subKey] = count;
     notifyListeners();
   }
 
-  // Converts your results map into a formatted JSON string
-  String getResultsAsJsonString() {
-    JsonEncoder encoder = const JsonEncoder.withIndent('  ');
-    return encoder.convert(_resultsData);
+  void loadResultsFromCsv(String csvString) {
+    try {
+      final List<List<dynamic>> rows = const CsvToListConverter().convert(
+        csvString,
+        eol: '\n',
+      );
+
+      if (rows.length < 2) return;
+
+      for (int i = 1; i < rows.length; i++) {
+        final row = rows[i];
+        final String userName = row[0].toString().replaceAll('"', '');
+        final String category = row[1].toString().replaceAll('"', '');
+        final String item = row[2].toString().replaceAll('"', '');
+        final int count = int.tryParse(row[3].toString()) ?? 0;
+
+        if (userName.isNotEmpty && !_users.contains(userName)) {
+          _users.add(userName);
+        }
+        if (!_allUserResults.containsKey(userName)) {
+          _allUserResults[userName] = {};
+        }
+        if (!_allUserResults[userName]!.containsKey(category)) {
+          _allUserResults[userName]![category] = {};
+        }
+        _allUserResults[userName]![category]![item] = count;
+      }
+
+      _currentUser = _users.isNotEmpty ? _users.first : null;
+      notifyListeners();
+    } catch (e) {
+      debugPrint('Error parsing CSV: $e');
+    }
+  }
+
+  void deleteCurrentUser() {
+    if (_currentUser == null) return;
+    final String userToDelete = _currentUser!;
+    final int userIndex = _users.indexOf(userToDelete);
+    _users.remove(userToDelete);
+    _allUserResults.remove(userToDelete);
+
+    if (_users.isEmpty) {
+      _currentUser = null;
+    } else if (userIndex > 0) {
+      _currentUser = _users[userIndex - 1];
+    } else {
+      _currentUser = _users.first;
+    }
+    notifyListeners();
+  }
+
+  // --- 💡 1. NEW FUNCTION (for Request 3) ---
+  /// Clears ALL results for the current user.
+  void clearCurrentUserResults() {
+    if (_currentUser != null) {
+      _allUserResults[_currentUser]?.clear();
+      notifyListeners();
+    }
+  }
+
+  // --- 💡 2. NEW FUNCTION (for Request 1) ---
+  /// Clears results for just one category for the current user.
+  void clearCategoryResults(String categoryKey) {
+    if (_currentUser == null) return;
+    if (_allUserResults.containsKey(_currentUser)) {
+      _allUserResults[_currentUser]!.remove(categoryKey);
+      notifyListeners();
+    }
   }
 }

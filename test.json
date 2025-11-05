@@ -1,16 +1,87 @@
 {
     "TAP": [
-        "Screen",
-        "Button A",
-        "asd B"
+        "Hor",
+        "Ver",
+        "Rev"
     ],
     "SWIPE": [
         "Left",
         "Right",
         "Up"
     ],
-    "LONG_PRESS": [
-        "Header",
-        "Footer Image"
+    "Pinky": [
+        "Hor",
+        "Ver",
+        "Rev"
+    ],
+    "Thumb": [
+        "Hor",
+        "Ver",
+        "Rev"
+    ],
+    "Middle": [
+        "Hor",
+        "Ver",
+        "Rev"
+    ],
+    "Index": [
+        "Hor",
+        "Ver",
+        "Rev"
+    ],
+    "Ring": [
+        "Hor",
+        "Ver",
+        "Rev"
+    ],
+    "Fist": [
+        "Hor",
+        "Ver",
+        "Rev"
+    ],
+    "test1": [
+        "Hor",
+        "Ver",
+        "Rev"
+    ],
+    "test2": [
+        "Hor",
+        "Ver",
+        "Rev"
+    ],
+    "test3": [
+        "Hor",
+        "Ver",
+        "Rev"
+    ],
+    "test4": [
+        "Hor",
+        "Ver",
+        "Rev"
+    ],
+    "test5": [
+        "Hor",
+        "Ver",
+        "Rev"
+    ],
+    "Tap_Band": [
+        "Hor",
+        "Ver",
+        "Rev"
+    ],
+    "Tap_hand": [
+        "Hor",
+        "Ver",
+        "Rev"
+    ],
+    "Arm": [
+        "Hor",
+        "Ver",
+        "Rev"
+    ],
+    "Wrist": [
+        "Hor",
+        "Ver",
+        "Rev"
     ]
 }
