@@ -3,18 +3,17 @@ import 'package:provider/provider.dart';
 import 'app_data.dart';
 import 'home_page.dart';
 
-// 💡 MODIFIED: main is now async
 void main() async {
-  // 💡 Ensure Flutter is ready
   WidgetsFlutterBinding.ensureInitialized();
-
-  // 💡 Create and load the data *before* running the app
+  
   final appData = AppData();
-  await appData.loadData(); // This waits for all data to load
+  await appData.loadData(); // Load data before running
 
   runApp(
-    // 💡 MODIFIED: Use .value to provide the *existing* instance
-    ChangeNotifierProvider.value(value: appData, child: const MyApp()),
+    ChangeNotifierProvider.value(
+      value: appData,
+      child: const MyApp(),
+    ),
   );
 }
 
@@ -27,7 +26,7 @@ class MyApp extends StatelessWidget {
       title: 'Data Collector',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
-        scaffoldBackgroundColor: const Color(0xFFF5F5F5),
+        scaffoldBackgroundColor: const Color(0xFFF0EAD6), 
         colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepPurple),
         useMaterial3: true,
         pageTransitionsTheme: const PageTransitionsTheme(
@@ -41,10 +40,19 @@ class MyApp extends StatelessWidget {
           },
         ),
         appBarTheme: const AppBarTheme(
-          backgroundColor: Color(0xFFF5F5F5),
+          backgroundColor: Color(0xFFF0EAD6), 
           foregroundColor: Colors.black87,
           elevation: 0,
           scrolledUnderElevation: 1,
+        ),
+        
+        // 💡 MODIFICATION: Changed CardTheme() to CardThemeData()
+        cardTheme: CardThemeData(
+          color: Colors.white,
+          elevation: 2,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(12),
+          ),
         ),
       ),
       home: const HomePage(),

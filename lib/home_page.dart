@@ -16,7 +16,8 @@ class HomePage extends StatefulWidget {
 }
 
 class _HomePageState extends State<HomePage> {
-  bool _isButtonGridExpanded = true;
+  // 💡 This is no longer needed
+  // bool _isButtonGridExpanded = true;
 
   @override
   void dispose() {
@@ -214,48 +215,47 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
-  // --- Helper: Builds the user panel (Unchanged) ---
+  // --- 💡 MODIFIED: Helper no longer a Card ---
   Widget _buildUserPanel(BuildContext context) {
     final appData = context.watch<AppData>();
     final users = appData.users;
     final currentUser = appData.currentUser;
 
-    return Card(
-      elevation: 2,
-      color: Colors.white,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            DropdownButton<String>(
-              value: currentUser,
-              isExpanded: true,
-              underline: Container(),
-              hint: const Text('Select a User'),
-              items: users.map((String userName) {
-                return DropdownMenuItem<String>(
-                  value: userName,
-                  child: Text(userName),
-                );
-              }).toList(),
-              onChanged: (String? newValue) {
-                context.read<AppData>().setCurrentUser(newValue);
-              },
-            ),
-            OutlinedButton.icon(
-              icon: const Icon(Icons.add, size: 18),
-              label: const Text('Add New User'),
-              style: OutlinedButton.styleFrom(
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(8),
+    // This is now just a Column, not a Card
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 12.0, vertical: 8.0),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          DropdownButton<String>(
+            value: currentUser,
+            isExpanded: true,
+            underline: Container(),
+            hint: const Text('Select a User'),
+            items: users.map((String userName) {
+              return DropdownMenuItem<String>(
+                value: userName,
+                child: Text(
+                  userName,
+                  style: const TextStyle(fontWeight: FontWeight.bold),
                 ),
+              );
+            }).toList(),
+            onChanged: (String? newValue) {
+              context.read<AppData>().setCurrentUser(newValue);
+            },
+          ),
+          OutlinedButton.icon(
+            icon: const Icon(Icons.add, size: 18),
+            label: const Text('Add New User'),
+            style: OutlinedButton.styleFrom(
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(8),
               ),
-              onPressed: () => _showAddUserDialog(context),
             ),
-          ],
-        ),
+            onPressed: () => _showAddUserDialog(context),
+          ),
+        ],
       ),
     );
   }
@@ -274,9 +274,6 @@ class _HomePageState extends State<HomePage> {
 
     if (categories.isEmpty) {
       return Card(
-        elevation: 2,
-        color: Colors.white,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
         child: Container(
           padding: const EdgeInsets.all(16),
           width: double.infinity,
@@ -306,9 +303,6 @@ class _HomePageState extends State<HomePage> {
 
     if (appData.currentUser == null) {
       return Card(
-        elevation: 2,
-        color: Colors.white,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
         child: Container(
           padding: const EdgeInsets.all(16),
           width: double.infinity,
@@ -321,13 +315,10 @@ class _HomePageState extends State<HomePage> {
       );
     }
 
-    return GridView.count(
-      crossAxisCount: 3,
-      shrinkWrap: true,
-      physics: const NeverScrollableScrollPhysics(),
-      crossAxisSpacing: 12,
-      mainAxisSpacing: 12,
-      childAspectRatio: 1.3,
+    // This is the adaptive grid
+    return Wrap(
+      spacing: 12, // Horizontal space
+      runSpacing: 12, // Vertical space
       children: categories.map((categoryKey) {
         final results = appData.currentResultsData[categoryKey] ?? {};
         final isFinished = _isCategoryFinished(context, categoryKey);
@@ -354,9 +345,7 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
-  //
-  // --- 💡 MODIFIED: Category card layout (Fixes syntax error) ---
-  //
+  // --- Category card (Unchanged) ---
   Widget _buildCategoryCard({
     required String categoryName,
     required Map<String, int> results,
@@ -365,112 +354,107 @@ class _HomePageState extends State<HomePage> {
     required VoidCallback onTap,
     required VoidCallback onLongPress,
   }) {
-    return Card(
-      elevation: 2,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-      color: Colors.white,
-      child: InkWell(
-        onTap: onTap,
-        onLongPress: onLongPress,
-        borderRadius: BorderRadius.circular(12),
-        child: Container(
-          padding: const EdgeInsets.all(12),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              // --- 💡 This is the corrected Row ---
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  // 1. Name (on the left)
-                  Flexible(
-                    flex: 3, // Give name more space
-                    child: Text(
-                      categoryName,
-                      style: TextStyle(
-                        fontWeight: FontWeight.bold,
-                        fontSize: 28,
-                        color: Theme.of(context).colorScheme.primary,
+    return Container(
+      width: 250,
+      child: Card(
+        child: InkWell(
+          onTap: onTap,
+          onLongPress: onLongPress,
+          borderRadius: BorderRadius.circular(12),
+          child: Container(
+            padding: const EdgeInsets.all(12),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Flexible(
+                      flex: 3,
+                      child: Text(
+                        categoryName,
+                        style: TextStyle(
+                          fontWeight: FontWeight.bold,
+                          fontSize: 18,
+                          color: Theme.of(context).colorScheme.primary,
+                        ),
+                        overflow: TextOverflow.ellipsis,
                       ),
-                      overflow: TextOverflow.ellipsis,
                     ),
-                  ),
-
-                  // 2. Average (in the middle)
-                  Flexible(
-                    flex: 2, // Give average space
-                    child: (average > 0)
-                        ? Text(
-                            average.toStringAsFixed(1),
-                            textAlign: TextAlign.center, // Center it
-                            style: const TextStyle(
-                              fontSize: 28,
-                              fontWeight: FontWeight.bold,
-                              color: Colors.black54,
+                    Flexible(
+                      flex: 2,
+                      child: (average > 0)
+                          ? Text(
+                              average.toStringAsFixed(1),
+                              textAlign: TextAlign.center,
+                              style: const TextStyle(
+                                fontSize: 18,
+                                fontWeight: FontWeight.bold,
+                                color: Colors.black54,
+                              ),
+                            )
+                          : const SizedBox(),
+                    ),
+                    if (isFinished)
+                      const Icon(
+                        Icons.check_circle,
+                        color: Colors.green,
+                        size: 20,
+                      )
+                    else
+                      const SizedBox(width: 20),
+                  ],
+                ),
+                const Divider(height: 12),
+                SizedBox(
+                  height: 100,
+                  child: SingleChildScrollView(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        if (results.isEmpty)
+                          Text(
+                            'No results yet.',
+                            style: TextStyle(
+                              fontSize: 14,
+                              color: Colors.grey.shade600,
                             ),
                           )
-                        : const SizedBox(), // Empty space if no average
-                  ),
-
-                  // 3. Checkmark (on the end)
-                  if (isFinished)
-                    const Icon(
-                      Icons.check_circle,
-                      color: Colors.green,
-                      size: 30,
-                    )
-                  else
-                    // Placeholder to keep spacing correct
-                    const SizedBox(width: 20),
-                ],
-              ),
-              const Divider(height: 12),
-
-              // --- End of modified Row ---
-              Expanded(
-                child: SingleChildScrollView(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      if (results.isEmpty)
-                        Text(
-                          'No results yet.',
-                          style: TextStyle(
-                            fontSize: 24,
-                            color: Colors.grey.shade600,
-                          ),
-                        )
-                      else
-                        ...results.entries.map((entry) {
-                          return Padding(
-                            padding: const EdgeInsets.symmetric(vertical: 2.0),
-                            child: Row(
-                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                              children: [
-                                Flexible(
-                                  child: Text(
-                                    entry.key,
-                                    style: const TextStyle(fontSize: 24),
-                                    overflow: TextOverflow.ellipsis,
+                        else
+                          ...results.entries.map((entry) {
+                            return Padding(
+                              padding: const EdgeInsets.symmetric(
+                                vertical: 2.0,
+                              ),
+                              child: Row(
+                                mainAxisAlignment:
+                                    MainAxisAlignment.spaceBetween,
+                                children: [
+                                  Flexible(
+                                    child: Text(
+                                      entry.key,
+                                      style: const TextStyle(fontSize: 14),
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
                                   ),
-                                ),
-                                Text(
-                                  entry.value.toString(),
-                                  style: const TextStyle(
-                                    fontSize: 24,
-                                    fontWeight: FontWeight.bold,
+                                  Text(
+                                    entry.value.toString(),
+                                    style: const TextStyle(
+                                      fontSize: 14,
+                                      fontWeight: FontWeight.bold,
+                                    ),
                                   ),
-                                ),
-                              ],
-                            ),
-                          );
-                        }),
-                    ],
+                                ],
+                              ),
+                            );
+                          }),
+                      ],
+                    ),
                   ),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
         ),
       ),
@@ -489,134 +473,121 @@ class _HomePageState extends State<HomePage> {
     return requiredItems.every((item) => recordedResults.containsKey(item));
   }
 
-  // --- Main build method (unchanged) ---
+  // --- 💡 MODIFIED: Main build method ---
   @override
   Widget build(BuildContext context) {
+    return Scaffold(
+      // appBar: AppBar(
+      //   title: const Text('Data Collector'),
+      // ),
+      // 💡 NEW LAYOUT: Row-based
+      body: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // 1. The new side action panel
+          _buildSideActionPanel(context),
+
+          // 2. A divider
+          const VerticalDivider(width: 1, thickness: 1),
+
+          // 3. The main content area
+          Expanded(
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.all(16), // Padding for the content
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  // Text(
+                  //   'Test Categories',
+                  //   style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                  //         color: Colors.black54,
+                  //       ),
+                  // ),
+                  const SizedBox(height: 10),
+                  _buildCategoryBoard(context), // The adaptive grid
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // --- 💡 NEW: Side Action Panel Widget ---
+  Widget _buildSideActionPanel(BuildContext context) {
     final appData = context.watch<AppData>();
     final bool hasAllResults = appData.allUserResults.isNotEmpty;
     final bool hasCurrentUserResults = appData.currentResultsData.isNotEmpty;
 
-    return Scaffold(
-      appBar: AppBar(title: const Text('Data Collector')),
-      body: SingleChildScrollView(
-        padding: const EdgeInsets.fromLTRB(8, 8, 8, 16),
+    return Container(
+      width: 240, // Width of the rail
+      // 💡 Use the cardColor from the theme (which we set to white in main.dart)
+      color: Theme.of(context).cardColor,
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.symmetric(vertical: 8.0),
         child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             _buildUserPanel(context),
-            const SizedBox(height: 24),
+            const Divider(height: 24, thickness: 1, indent: 16, endIndent: 16),
 
-            Card(
-              elevation: 2,
-              color: Colors.white,
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(12),
-              ),
-              child: Column(
-                children: [
-                  ListTile(
-                    title: Text(
-                      'Actions',
-                      style: Theme.of(context).textTheme.titleMedium,
-                    ),
-                    trailing: IconButton(
-                      icon: Icon(
-                        _isButtonGridExpanded
-                            ? Icons.expand_less
-                            : Icons.expand_more,
-                      ),
-                      onPressed: () {
-                        setState(() {
-                          _isButtonGridExpanded = !_isButtonGridExpanded;
-                        });
-                      },
-                    ),
-                  ),
-                  Visibility(
-                    visible: _isButtonGridExpanded,
-                    child: Padding(
-                      padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
-                      child: GridView.count(
-                        crossAxisCount: 3,
-                        shrinkWrap: true,
-                        physics: const NeverScrollableScrollPhysics(),
-                        crossAxisSpacing: 10,
-                        mainAxisSpacing: 10,
-                        childAspectRatio: 1.5,
-                        children: [
-                          _buildActionButton(
-                            context,
-                            icon: Icons.upload_file,
-                            label: 'Load Settings',
-                            onTap: () => _pickAndLoadSettings(context),
-                          ),
-                          _buildActionButton(
-                            context,
-                            icon: Icons.folder_open,
-                            label: 'Load Results',
-                            onTap: () => _pickAndLoadResults(context),
-                          ),
-                          _buildActionButton(
-                            context,
-                            icon: Icons.settings,
-                            label: 'Settings',
-                            onTap: () {
-                              Navigator.push(
-                                context,
-                                MaterialPageRoute(
-                                  builder: (context) => SettingsPage(),
-                                ),
-                              );
-                            },
-                          ),
-                          _buildActionButton(
-                            context,
-                            icon: Icons.download,
-                            label: 'Download',
-                            isEnabled: hasAllResults,
-                            onTap: () => _downloadResults(context),
-                          ),
-                          _buildActionButton(
-                            context,
-                            icon: Icons.copy_all_outlined,
-                            label: 'Copy',
-                            color: Colors.green.shade700,
-                            isEnabled: hasAllResults,
-                            onTap: () => _copyResultsToClipboard(context),
-                          ),
-                          _buildActionButton(
-                            context,
-                            icon: Icons.delete_sweep_outlined,
-                            label: 'Delete User',
-                            color: Colors.red.shade700,
-                            isEnabled: hasCurrentUserResults,
-                            onTap: () => _showDeleteUserDialog(context),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                ],
-              ),
+            // 💡 The "classic" rail buttons
+            _buildRailButton(
+              context,
+              icon: Icons.upload_file,
+              label: 'Load Settings',
+              onTap: () => _pickAndLoadSettings(context),
             ),
-            const SizedBox(height: 32),
-
-            Text(
-              'Test Categories',
-              style: Theme.of(
-                context,
-              ).textTheme.headlineSmall?.copyWith(color: Colors.black54),
+            _buildRailButton(
+              context,
+              icon: Icons.folder_open,
+              label: 'Load Results',
+              onTap: () => _pickAndLoadResults(context),
             ),
-            const SizedBox(height: 10),
-            _buildCategoryBoard(context),
+            _buildRailButton(
+              context,
+              icon: Icons.settings,
+              label: 'Settings Editor',
+              onTap: () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (context) => SettingsPage()),
+                );
+              },
+            ),
+            const Divider(height: 24, thickness: 1, indent: 16, endIndent: 16),
+            _buildRailButton(
+              context,
+              icon: Icons.download,
+              label: 'Download All Results',
+              isEnabled: hasAllResults,
+              onTap: () => _downloadResults(context),
+            ),
+            _buildRailButton(
+              context,
+              icon: Icons.copy_all_outlined,
+              label: 'Copy All Results',
+              color: Colors.green.shade700,
+              isEnabled: hasAllResults,
+              onTap: () => _copyResultsToClipboard(context),
+            ),
+            _buildRailButton(
+              context,
+              icon: Icons.delete_sweep_outlined,
+              label: 'Delete Current User',
+              color: Colors.red.shade700,
+              isEnabled: hasCurrentUserResults,
+              onTap: () => _showDeleteUserDialog(context),
+            ),
           ],
         ),
       ),
     );
   }
 
-  // --- Button helper (unchanged) ---
-  Widget _buildActionButton(
+  // --- 💡 NEW: Helper for building the rail buttons ---
+  Widget _buildRailButton(
     BuildContext context, {
     required IconData icon,
     required String label,
@@ -627,36 +598,18 @@ class _HomePageState extends State<HomePage> {
     final anabledColor = color ?? Theme.of(context).colorScheme.primary;
     final disabledColor = Colors.grey.shade400;
 
-    return Card(
-      elevation: isEnabled ? 4 : 0,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-      child: InkWell(
-        onTap: isEnabled ? onTap : null,
-        borderRadius: BorderRadius.circular(12),
-        child: Opacity(
-          opacity: isEnabled ? 1.0 : 0.5,
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Icon(
-                icon,
-                size: 28,
-                color: isEnabled ? anabledColor : disabledColor,
-              ),
-              const SizedBox(height: 6),
-              Text(
-                label,
-                style: TextStyle(
-                  fontSize: 21,
-                  fontWeight: FontWeight.w600,
-                  color: isEnabled ? anabledColor : disabledColor,
-                ),
-                textAlign: TextAlign.center,
-              ),
-            ],
-          ),
+    return ListTile(
+      leading: Icon(icon, color: isEnabled ? anabledColor : disabledColor),
+      title: Text(
+        label,
+        style: TextStyle(
+          fontSize: 14,
+          fontWeight: FontWeight.w500,
+          color: isEnabled ? Colors.black87 : disabledColor,
         ),
       ),
+      onTap: isEnabled ? onTap : null,
+      enabled: isEnabled,
     );
   }
 }

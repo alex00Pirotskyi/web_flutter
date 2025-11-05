@@ -79,11 +79,71 @@ class _CountingPageState extends State<CountingPage> {
     );
   }
 
+  // --- 💡 NEW: Auto-advance logic ---
+  void _onScorePressed(int score) {
+    // Get the sub-keys from AppData
+    final subKeys = context.read<AppData>().settingsData[widget.mainKey] ?? [];
+    if (_selectedSubKey == null) return; // Should not happen, but good safety
+
+    // 1. Record the result for the current item
+    context.read<AppData>().updateResult(
+      widget.mainKey,
+      _selectedSubKey!,
+      score,
+    );
+
+    // 2. Find the index of the current item
+    final int currentIndex = subKeys.indexOf(_selectedSubKey!);
+    String? nextKey;
+
+    // 3. Find the next item, if one exists
+    if (currentIndex != -1 && currentIndex < subKeys.length - 1) {
+      nextKey = subKeys[currentIndex + 1];
+    }
+    // If it's the last item, nextKey will be null, disabling the buttons
+
+    // 4. Set the new item as selected
+    setState(() {
+      _selectedSubKey = nextKey;
+    });
+  }
+
+  // --- 💡 NEW: Item selector widget ---
+  Widget _buildItemSelector() {
+    final appData = context.watch<AppData>();
+    final subKeys = appData.settingsData[widget.mainKey] ?? [];
+
+    return Container(
+      // Add a subtle background to separate it
+      color: Theme.of(context).cardColor.withAlpha(200),
+      padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
+      // Center the chips
+      alignment: Alignment.center,
+      child: Wrap(
+        spacing: 8.0,
+        runSpacing: 4.0,
+        alignment: WrapAlignment.center,
+        children: subKeys.map((subKey) {
+          return ChoiceChip(
+            label: Text(subKey),
+            // Use a stronger selected color
+            selectedColor: Theme.of(context).colorScheme.primaryContainer,
+            selected: _selectedSubKey == subKey,
+            onSelected: (isSelected) {
+              setState(() {
+                _selectedSubKey = isSelected ? subKey : null;
+              });
+            },
+          );
+        }).toList(),
+      ),
+    );
+  }
+
   Widget _buildNumberPad() {
     return Container(
       padding: const EdgeInsets.fromLTRB(8.0, 8.0, 8.0, 4.0),
       decoration: BoxDecoration(
-        // 💡 MODIFICATION: Fixed deprecated colors
         color: Theme.of(
           context,
         ).colorScheme.surfaceContainerHighest.withAlpha(128),
@@ -104,15 +164,10 @@ class _CountingPageState extends State<CountingPage> {
         itemBuilder: (context, index) {
           final score = index + 1;
           return ElevatedButton(
+            // 💡 MODIFIED: Use the new auto-advance function
             onPressed: _selectedSubKey == null
                 ? null
-                : () {
-                    context.read<AppData>().updateResult(
-                      widget.mainKey,
-                      _selectedSubKey!,
-                      score,
-                    );
-                  },
+                : () => _onScorePressed(score),
             style: ElevatedButton.styleFrom(
               padding: EdgeInsets.zero,
               textStyle: const TextStyle(
@@ -130,13 +185,15 @@ class _CountingPageState extends State<CountingPage> {
   @override
   Widget build(BuildContext context) {
     final appData = context.watch<AppData>();
-    final subKeys = appData.settingsData[widget.mainKey] ?? [];
     final currentResults = appData.currentResultsData[widget.mainKey] ?? {};
 
     return Scaffold(
       appBar: AppBar(
         title: Text(widget.mainKey),
-        backgroundColor: Theme.of(context).colorScheme.inversePrimary,
+        // 💡 MODIFICATION: Set background color to match theme
+        backgroundColor: const Color(0xFFF0EAD6),
+        elevation: 0,
+        scrolledUnderElevation: 1,
         actions: [
           IconButton(
             icon: const Icon(Icons.clear_all),
@@ -155,9 +212,11 @@ class _CountingPageState extends State<CountingPage> {
           const SizedBox(width: 10),
         ],
       ),
+      // --- 💡 MODIFIED: Page layout ---
       body: Column(
         children: [
           Expanded(
+            // This part now only contains the results and tap area
             child: Listener(
               onPointerDown: _handlePageTap,
               child: Stack(
@@ -168,27 +227,7 @@ class _CountingPageState extends State<CountingPage> {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text(
-                          '1. Select an item to score:',
-                          style: Theme.of(context).textTheme.titleLarge,
-                        ),
-                        const SizedBox(height: 10),
-                        Wrap(
-                          spacing: 8.0,
-                          runSpacing: 4.0,
-                          children: subKeys.map((subKey) {
-                            return ChoiceChip(
-                              label: Text(subKey),
-                              selected: _selectedSubKey == subKey,
-                              onSelected: (isSelected) {
-                                setState(() {
-                                  _selectedSubKey = isSelected ? subKey : null;
-                                });
-                              },
-                            );
-                          }).toList(),
-                        ),
-                        const Divider(height: 40),
+                        // The item selector (ChoiceChip Wrap) has been MOVED
                         Text(
                           'Current Results for ${widget.mainKey}:',
                           style: Theme.of(context).textTheme.titleLarge,
@@ -221,8 +260,7 @@ class _CountingPageState extends State<CountingPage> {
                           vertical: 8,
                         ),
                         decoration: BoxDecoration(
-                          // 💡 MODIFICATION: Fixed deprecated color
-                          color: Colors.black.withAlpha(153), // 0.6 opacity
+                          color: Colors.black.withAlpha(153),
                           borderRadius: BorderRadius.circular(20),
                         ),
                         child: Text(
@@ -246,8 +284,7 @@ class _CountingPageState extends State<CountingPage> {
                           height: 24,
                           decoration: BoxDecoration(
                             shape: BoxShape.circle,
-                            // 💡 MODIFICATION: Fixed deprecated color
-                            color: Colors.blue.withAlpha(128), // 0.5 opacity
+                            color: Colors.blue.withAlpha(128),
                           ),
                         ),
                       ),
@@ -257,6 +294,11 @@ class _CountingPageState extends State<CountingPage> {
               ),
             ),
           ),
+
+          // --- 💡 NEW POSITION: Item selector is now here ---
+          _buildItemSelector(),
+
+          // --- 💡 NEW POSITION: Number pad is now here ---
           _buildNumberPad(),
         ],
       ),
