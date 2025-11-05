@@ -4,9 +4,12 @@ import 'package:csv/csv.dart';
 
 class AppData extends ChangeNotifier {
   Map<String, List<String>> _settingsData = {};
-  List<String> _users = [];
+
+  // 💡 MODIFICATION: Made these two fields final
+  final List<String> _users = [];
+  final Map<String, Map<String, Map<String, int>>> _allUserResults = {};
+
   String? _currentUser;
-  Map<String, Map<String, Map<String, int>>> _allUserResults = {};
 
   Map<String, List<String>> get settingsData => _settingsData;
   List<String> get users => _users;
@@ -114,8 +117,6 @@ class AppData extends ChangeNotifier {
     notifyListeners();
   }
 
-  // --- 💡 1. NEW FUNCTION (for Request 3) ---
-  /// Clears ALL results for the current user.
   void clearCurrentUserResults() {
     if (_currentUser != null) {
       _allUserResults[_currentUser]?.clear();
@@ -123,13 +124,33 @@ class AppData extends ChangeNotifier {
     }
   }
 
-  // --- 💡 2. NEW FUNCTION (for Request 1) ---
-  /// Clears results for just one category for the current user.
   void clearCategoryResults(String categoryKey) {
     if (_currentUser == null) return;
     if (_allUserResults.containsKey(_currentUser)) {
       _allUserResults[_currentUser]!.remove(categoryKey);
       notifyListeners();
     }
+  }
+
+  // --- 💡 NEW FUNCTION ---
+  /// Gets the current settings as a formatted JSON string.
+  String getSettingsAsJsonString() {
+    if (_settingsData.isEmpty) {
+      // Return a nice empty template if no settings are loaded
+      return '''
+{
+  "CATEGORY_1_NAME": [
+    "Item 1",
+    "Item 2"
+  ],
+  "CATEGORY_2_NAME": [
+    "Item A",
+    "Item B"
+  ]
+}
+''';
+    }
+    JsonEncoder encoder = const JsonEncoder.withIndent('  ');
+    return encoder.convert(_settingsData);
   }
 }

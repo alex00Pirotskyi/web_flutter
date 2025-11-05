@@ -3,8 +3,10 @@ import 'package:flutter/services.dart'; // For Clipboard
 import 'package:provider/provider.dart';
 import 'app_data.dart';
 import 'counting_page.dart';
+import 'settings_page.dart';
 import 'dart:convert'; // For JSON and base64
-import 'dart:html' as html; // For web-only
+import 'package:web/web.dart' as web;
+import 'dart:js_interop';
 
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
@@ -14,7 +16,6 @@ class HomePage extends StatefulWidget {
 }
 
 class _HomePageState extends State<HomePage> {
-  // --- 💡 NEW State variable for Request 2 ---
   bool _isButtonGridExpanded = true;
 
   @override
@@ -22,7 +23,7 @@ class _HomePageState extends State<HomePage> {
     super.dispose();
   }
 
-  // --- All backend functions (CSV, Download, etc.) are unchanged ---
+  // --- Backend functions (unchanged) ---
   String _buildCsvData(BuildContext context) {
     final allResults = context.read<AppData>().allUserResults;
     List<List<String>> rows = [];
@@ -44,10 +45,10 @@ class _HomePageState extends State<HomePage> {
     final csvData = _buildCsvData(context);
     final bytes = utf8.encode(csvData);
     final base64 = base64Encode(bytes);
-    final anchor =
-        html.AnchorElement(href: 'data:text/csv;base64,$base64')
-          ..setAttribute('download', 'all-user-results.csv')
-          ..click();
+    web.HTMLAnchorElement()
+      ..href = 'data:text/csv;base64,$base64'
+      ..setAttribute('download', 'all-user-results.csv')
+      ..click();
   }
 
   void _copyResultsToClipboard(BuildContext context) {
@@ -58,23 +59,25 @@ class _HomePageState extends State<HomePage> {
         content: Text('All results copied to clipboard!'),
         behavior: SnackBarBehavior.floating,
         shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.all(Radius.circular(12))),
+          borderRadius: BorderRadius.all(Radius.circular(12)),
+        ),
         width: 300,
       ),
     );
   }
-  
+
   void _pickAndLoadResults(BuildContext context) {
-    final html.FileUploadInputElement uploadInput =
-        html.FileUploadInputElement();
+    final web.HTMLInputElement uploadInput = web.HTMLInputElement();
+    uploadInput.type = 'file';
     uploadInput.accept = '.csv,text/csv';
     uploadInput.click();
     uploadInput.onChange.listen((e) {
-      if (uploadInput.files == null || uploadInput.files!.isEmpty) return;
-      final html.File file = uploadInput.files!.first;
-      final html.FileReader reader = html.FileReader();
+      if (uploadInput.files == null || uploadInput.files!.length == 0) return;
+      final web.File file = uploadInput.files!.item(0)!;
+      final web.FileReader reader = web.FileReader();
       reader.onLoadEnd.listen((e) {
-        final String csvContent = reader.result as String;
+        if (!context.mounted) return;
+        final String csvContent = (reader.result as JSString).toDart;
         if (csvContent.isNotEmpty) {
           context.read<AppData>().loadResultsFromCsv(csvContent);
         }
@@ -84,16 +87,17 @@ class _HomePageState extends State<HomePage> {
   }
 
   void _pickAndLoadSettings(BuildContext context) {
-    final html.FileUploadInputElement uploadInput =
-        html.FileUploadInputElement();
+    final web.HTMLInputElement uploadInput = web.HTMLInputElement();
+    uploadInput.type = 'file';
     uploadInput.accept = '.json,application/json';
     uploadInput.click();
     uploadInput.onChange.listen((e) {
-      if (uploadInput.files == null || uploadInput.files!.isEmpty) return;
-      final html.File file = uploadInput.files!.first;
-      final html.FileReader reader = html.FileReader();
+      if (uploadInput.files == null || uploadInput.files!.length == 0) return;
+      final web.File file = uploadInput.files!.item(0)!;
+      final web.FileReader reader = web.FileReader();
       reader.onLoadEnd.listen((e) {
-        final String jsonContent = reader.result as String;
+        if (!context.mounted) return;
+        final String jsonContent = (reader.result as JSString).toDart;
         if (jsonContent.isNotEmpty) {
           context.read<AppData>().loadSettings(jsonContent);
         }
@@ -101,28 +105,25 @@ class _HomePageState extends State<HomePage> {
       reader.readAsText(file);
     });
   }
-  // --- End of helper functions ---
 
-
-  // --- Dialogs (Unchanged) ---
+  // --- Dialogs (unchanged) ---
   void _showDeleteUserDialog(BuildContext context) {
     final appData = context.read<AppData>();
     final currentUser = appData.currentUser;
-
     if (currentUser == null) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Please add or select a user first.')),
       );
       return;
     }
-
     showDialog(
       context: context,
       builder: (BuildContext dialogContext) {
         return AlertDialog(
           title: const Text('Delete User?'),
           content: Text(
-              'Are you sure you want to delete "$currentUser" and all their results?\n\nThis cannot be undone.'),
+            'Are you sure you want to delete "$currentUser" and all their results?\n\nThis cannot be undone.',
+          ),
           actions: [
             TextButton(
               child: const Text('Cancel'),
@@ -134,6 +135,7 @@ class _HomePageState extends State<HomePage> {
               style: TextButton.styleFrom(foregroundColor: Colors.red),
               child: const Text('Delete'),
               onPressed: () {
+                if (!context.mounted) return;
                 appData.deleteCurrentUser();
                 Navigator.of(dialogContext).pop();
               },
@@ -144,18 +146,17 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
-  // --- 💡 NEW: Alert Dialog for Request 1 ---
   void _showResetCategoryDialog(BuildContext context, String categoryName) {
     final appData = context.read<AppData>();
     final currentUser = appData.currentUser;
-
     showDialog(
       context: context,
       builder: (BuildContext dialogContext) {
         return AlertDialog(
           title: const Text('Reset Category?'),
           content: Text(
-              'Are you sure you want to reset the results for "$categoryName" for user "$currentUser"?'),
+            'Are you sure you want to reset the results for "$categoryName" for user "$currentUser"?',
+          ),
           actions: [
             TextButton(
               child: const Text('Cancel'),
@@ -167,7 +168,7 @@ class _HomePageState extends State<HomePage> {
               style: TextButton.styleFrom(foregroundColor: Colors.red),
               child: const Text('Reset'),
               onPressed: () {
-                // Call the new function
+                if (!context.mounted) return;
                 appData.clearCategoryResults(categoryName);
                 Navigator.of(dialogContext).pop();
               },
@@ -200,6 +201,7 @@ class _HomePageState extends State<HomePage> {
             TextButton(
               child: const Text('Add'),
               onPressed: () {
+                if (!context.mounted) return;
                 if (userController.text.isNotEmpty) {
                   context.read<AppData>().addUser(userController.text);
                   Navigator.of(dialogContext).pop();
@@ -258,11 +260,18 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
-  // --- Category board and card widgets ---
+  // --- Helper: Calculate average (Unchanged) ---
+  double _calculateCategoryAverage(Map<String, int> results) {
+    if (results.isEmpty) return 0.0;
+    final sum = results.values.reduce((a, b) => a + b);
+    return sum / results.length;
+  }
+
+  // --- Category board (Unchanged) ---
   Widget _buildCategoryBoard(BuildContext context) {
     final appData = context.watch<AppData>();
     final categories = appData.settingsData.keys.toList();
-    
+
     if (categories.isEmpty) {
       return Card(
         elevation: 2,
@@ -271,15 +280,30 @@ class _HomePageState extends State<HomePage> {
         child: Container(
           padding: const EdgeInsets.all(16),
           width: double.infinity,
-          child: Text(
-            'Load a settings JSON file to begin.',
-            textAlign: TextAlign.center,
-            style: TextStyle(color: Colors.grey.shade600),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                'No settings loaded.',
+                textAlign: TextAlign.center,
+                style: TextStyle(color: Colors.grey.shade600),
+              ),
+              const SizedBox(height: 12),
+              FilledButton(
+                onPressed: () {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(builder: (context) => SettingsPage()),
+                  );
+                },
+                child: const Text('Create Settings'),
+              ),
+            ],
           ),
         ),
       );
     }
-    
+
     if (appData.currentUser == null) {
       return Card(
         elevation: 2,
@@ -303,15 +327,17 @@ class _HomePageState extends State<HomePage> {
       physics: const NeverScrollableScrollPhysics(),
       crossAxisSpacing: 12,
       mainAxisSpacing: 12,
-      childAspectRatio: 0.9,
+      childAspectRatio: 1.3,
       children: categories.map((categoryKey) {
         final results = appData.currentResultsData[categoryKey] ?? {};
         final isFinished = _isCategoryFinished(context, categoryKey);
+        final average = _calculateCategoryAverage(results);
 
         return _buildCategoryCard(
           categoryName: categoryKey,
           results: results,
           isFinished: isFinished,
+          average: average,
           onTap: () {
             Navigator.push(
               context,
@@ -320,7 +346,6 @@ class _HomePageState extends State<HomePage> {
               ),
             );
           },
-          // 💡 NEW: Pass the long-press action
           onLongPress: () {
             _showResetCategoryDialog(context, categoryKey);
           },
@@ -328,13 +353,17 @@ class _HomePageState extends State<HomePage> {
       }).toList(),
     );
   }
-  
+
+  //
+  // --- 💡 MODIFIED: Category card layout (Fixes syntax error) ---
+  //
   Widget _buildCategoryCard({
     required String categoryName,
     required Map<String, int> results,
     required bool isFinished,
+    required double average,
     required VoidCallback onTap,
-    required VoidCallback onLongPress, // 💡 NEW
+    required VoidCallback onLongPress,
   }) {
     return Card(
       elevation: 2,
@@ -342,36 +371,63 @@ class _HomePageState extends State<HomePage> {
       color: Colors.white,
       child: InkWell(
         onTap: onTap,
-        onLongPress: onLongPress, // 💡 NEW
+        onLongPress: onLongPress,
         borderRadius: BorderRadius.circular(12),
         child: Container(
           padding: const EdgeInsets.all(12),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
+              // --- 💡 This is the corrected Row ---
               Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
+                  // 1. Name (on the left)
                   Flexible(
+                    flex: 3, // Give name more space
                     child: Text(
                       categoryName,
                       style: TextStyle(
                         fontWeight: FontWeight.bold,
-                        fontSize: 14,
+                        fontSize: 28,
                         color: Theme.of(context).colorScheme.primary,
                       ),
                       overflow: TextOverflow.ellipsis,
                     ),
                   ),
+
+                  // 2. Average (in the middle)
+                  Flexible(
+                    flex: 2, // Give average space
+                    child: (average > 0)
+                        ? Text(
+                            average.toStringAsFixed(1),
+                            textAlign: TextAlign.center, // Center it
+                            style: const TextStyle(
+                              fontSize: 28,
+                              fontWeight: FontWeight.bold,
+                              color: Colors.black54,
+                            ),
+                          )
+                        : const SizedBox(), // Empty space if no average
+                  ),
+
+                  // 3. Checkmark (on the end)
                   if (isFinished)
                     const Icon(
                       Icons.check_circle,
                       color: Colors.green,
-                      size: 20,
-                    ),
+                      size: 30,
+                    )
+                  else
+                    // Placeholder to keep spacing correct
+                    const SizedBox(width: 20),
                 ],
               ),
               const Divider(height: 12),
+
+              // --- End of modified Row ---
               Expanded(
                 child: SingleChildScrollView(
                   child: Column(
@@ -381,7 +437,9 @@ class _HomePageState extends State<HomePage> {
                         Text(
                           'No results yet.',
                           style: TextStyle(
-                              fontSize: 12, color: Colors.grey.shade600),
+                            fontSize: 24,
+                            color: Colors.grey.shade600,
+                          ),
                         )
                       else
                         ...results.entries.map((entry) {
@@ -393,20 +451,21 @@ class _HomePageState extends State<HomePage> {
                                 Flexible(
                                   child: Text(
                                     entry.key,
-                                    style: const TextStyle(fontSize: 12),
+                                    style: const TextStyle(fontSize: 24),
                                     overflow: TextOverflow.ellipsis,
                                   ),
                                 ),
                                 Text(
                                   entry.value.toString(),
                                   style: const TextStyle(
-                                      fontSize: 12,
-                                      fontWeight: FontWeight.bold),
+                                    fontSize: 24,
+                                    fontWeight: FontWeight.bold,
+                                  ),
                                 ),
                               ],
                             ),
                           );
-                        }).toList(),
+                        }),
                     ],
                   ),
                 ),
@@ -426,10 +485,11 @@ class _HomePageState extends State<HomePage> {
     if (requiredItems == null || requiredItems.isEmpty) return false;
     if (recordedResults == null) return false;
     if (requiredItems.length != recordedResults.length) return false;
-    
+
     return requiredItems.every((item) => recordedResults.containsKey(item));
   }
 
+  // --- Main build method (unchanged) ---
   @override
   Widget build(BuildContext context) {
     final appData = context.watch<AppData>();
@@ -437,33 +497,34 @@ class _HomePageState extends State<HomePage> {
     final bool hasCurrentUserResults = appData.currentResultsData.isNotEmpty;
 
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('Data Collector'),
-      ),
+      appBar: AppBar(title: const Text('Data Collector')),
       body: SingleChildScrollView(
         padding: const EdgeInsets.fromLTRB(8, 8, 8, 16),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            // --- User Panel ---
             _buildUserPanel(context),
             const SizedBox(height: 24),
 
-            // --- 💡 MODIFIED: Foldable Button Grid ---
             Card(
               elevation: 2,
               color: Colors.white,
               shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(12)),
+                borderRadius: BorderRadius.circular(12),
+              ),
               child: Column(
                 children: [
                   ListTile(
-                    title: Text('Actions',
-                        style: Theme.of(context).textTheme.titleMedium),
+                    title: Text(
+                      'Actions',
+                      style: Theme.of(context).textTheme.titleMedium,
+                    ),
                     trailing: IconButton(
-                      icon: Icon(_isButtonGridExpanded
-                          ? Icons.expand_less
-                          : Icons.expand_more),
+                      icon: Icon(
+                        _isButtonGridExpanded
+                            ? Icons.expand_less
+                            : Icons.expand_more,
+                      ),
                       onPressed: () {
                         setState(() {
                           _isButtonGridExpanded = !_isButtonGridExpanded;
@@ -471,7 +532,6 @@ class _HomePageState extends State<HomePage> {
                       },
                     ),
                   ),
-                  // This will hide/show the grid
                   Visibility(
                     visible: _isButtonGridExpanded,
                     child: Padding(
@@ -495,6 +555,19 @@ class _HomePageState extends State<HomePage> {
                             icon: Icons.folder_open,
                             label: 'Load Results',
                             onTap: () => _pickAndLoadResults(context),
+                          ),
+                          _buildActionButton(
+                            context,
+                            icon: Icons.settings,
+                            label: 'Settings',
+                            onTap: () {
+                              Navigator.push(
+                                context,
+                                MaterialPageRoute(
+                                  builder: (context) => SettingsPage(),
+                                ),
+                              );
+                            },
                           ),
                           _buildActionButton(
                             context,
@@ -530,19 +603,19 @@ class _HomePageState extends State<HomePage> {
 
             Text(
               'Test Categories',
-              style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                    color: Colors.black54,
-                  ),
+              style: Theme.of(
+                context,
+              ).textTheme.headlineSmall?.copyWith(color: Colors.black54),
             ),
             const SizedBox(height: 10),
-            _buildCategoryBoard(context), // The grid widget
+            _buildCategoryBoard(context),
           ],
         ),
       ),
     );
   }
 
-  // (This widget is unchanged)
+  // --- Button helper (unchanged) ---
   Widget _buildActionButton(
     BuildContext context, {
     required IconData icon,
@@ -574,7 +647,7 @@ class _HomePageState extends State<HomePage> {
               Text(
                 label,
                 style: TextStyle(
-                  fontSize: 11,
+                  fontSize: 21,
                   fontWeight: FontWeight.w600,
                   color: isEnabled ? anabledColor : disabledColor,
                 ),

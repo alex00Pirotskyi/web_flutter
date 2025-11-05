@@ -45,8 +45,7 @@ class _CountingPageState extends State<CountingPage> {
       }
     });
   }
-  
-  // --- 💡 MODIFIED: Alert Dialog for resetting CURRENT CATEGORY ---
+
   void _showResetCategoryDialog(BuildContext context) {
     final appData = context.read<AppData>();
     final currentUser = appData.currentUser ?? "current user";
@@ -55,11 +54,10 @@ class _CountingPageState extends State<CountingPage> {
       context: context,
       builder: (BuildContext dialogContext) {
         return AlertDialog(
-          // 💡 Changed title
           title: const Text('Reset Category Test?'),
-          // 💡 Changed content
           content: Text(
-              'Are you sure you want to clear all results for "${widget.mainKey}" for $currentUser?'),
+            'Are you sure you want to clear all results for "${widget.mainKey}" for $currentUser?',
+          ),
           actions: [
             TextButton(
               child: const Text('Cancel'),
@@ -71,10 +69,8 @@ class _CountingPageState extends State<CountingPage> {
               style: TextButton.styleFrom(foregroundColor: Colors.red),
               child: const Text('Reset'),
               onPressed: () {
-                // 💡 Call the correct function: clearCategoryResults
                 appData.clearCategoryResults(widget.mainKey);
                 Navigator.of(dialogContext).pop();
-                // We DON'T pop the page, we just stay here
               },
             ),
           ],
@@ -83,23 +79,22 @@ class _CountingPageState extends State<CountingPage> {
     );
   }
 
-
   Widget _buildNumberPad() {
     return Container(
       padding: const EdgeInsets.fromLTRB(8.0, 8.0, 8.0, 4.0),
       decoration: BoxDecoration(
-        color: Theme.of(context).colorScheme.surfaceVariant.withOpacity(0.5),
+        // 💡 MODIFICATION: Fixed deprecated colors
+        color: Theme.of(
+          context,
+        ).colorScheme.surfaceContainerHighest.withAlpha(128),
         border: Border(
-          top: BorderSide(
-            color: Theme.of(context).dividerColor,
-            width: 1,
-          ),
+          top: BorderSide(color: Theme.of(context).dividerColor, width: 1),
         ),
       ),
       child: GridView.builder(
         gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
           crossAxisCount: 5,
-          childAspectRatio: 2.5,
+          childAspectRatio: 5.5,
           crossAxisSpacing: 4,
           mainAxisSpacing: 4,
         ),
@@ -113,10 +108,10 @@ class _CountingPageState extends State<CountingPage> {
                 ? null
                 : () {
                     context.read<AppData>().updateResult(
-                          widget.mainKey,
-                          _selectedSubKey!,
-                          score,
-                        );
+                      widget.mainKey,
+                      _selectedSubKey!,
+                      score,
+                    );
                   },
             style: ElevatedButton.styleFrom(
               padding: EdgeInsets.zero,
@@ -134,7 +129,6 @@ class _CountingPageState extends State<CountingPage> {
 
   @override
   Widget build(BuildContext context) {
-    // 💡 Use context.watch() so the page rebuilds when results are cleared
     final appData = context.watch<AppData>();
     final subKeys = appData.settingsData[widget.mainKey] ?? [];
     final currentResults = appData.currentResultsData[widget.mainKey] ?? {};
@@ -144,11 +138,10 @@ class _CountingPageState extends State<CountingPage> {
         title: Text(widget.mainKey),
         backgroundColor: Theme.of(context).colorScheme.inversePrimary,
         actions: [
-          // 💡 MODIFIED Button
           IconButton(
             icon: const Icon(Icons.clear_all),
-            tooltip: 'Reset This Category', // 💡 Changed tooltip
-            onPressed: () => _showResetCategoryDialog(context), // 💡 Changed function
+            tooltip: 'Reset This Category',
+            onPressed: () => _showResetCategoryDialog(context),
           ),
           IconButton(
             icon: const Icon(Icons.refresh),
@@ -201,7 +194,7 @@ class _CountingPageState extends State<CountingPage> {
                           style: Theme.of(context).textTheme.titleLarge,
                         ),
                         const SizedBox(height: 10),
-                        if (currentResults.isEmpty) // This will now update on reset
+                        if (currentResults.isEmpty)
                           const Text('No results yet.')
                         else
                           ...currentResults.entries.map((entry) {
@@ -209,8 +202,9 @@ class _CountingPageState extends State<CountingPage> {
                               title: Text(entry.key),
                               trailing: Text(
                                 entry.value.toString(),
-                                style:
-                                    Theme.of(context).textTheme.headlineSmall,
+                                style: Theme.of(
+                                  context,
+                                ).textTheme.headlineSmall,
                               ),
                             );
                           }),
@@ -223,9 +217,12 @@ class _CountingPageState extends State<CountingPage> {
                       child: Container(
                         margin: const EdgeInsets.only(top: 20.0),
                         padding: const EdgeInsets.symmetric(
-                            horizontal: 16, vertical: 8),
+                          horizontal: 16,
+                          vertical: 8,
+                        ),
                         decoration: BoxDecoration(
-                          color: Colors.black.withOpacity(0.6),
+                          // 💡 MODIFICATION: Fixed deprecated color
+                          color: Colors.black.withAlpha(153), // 0.6 opacity
                           borderRadius: BorderRadius.circular(20),
                         ),
                         child: Text(
@@ -249,7 +246,8 @@ class _CountingPageState extends State<CountingPage> {
                           height: 24,
                           decoration: BoxDecoration(
                             shape: BoxShape.circle,
-                            color: Colors.blue.withOpacity(0.5),
+                            // 💡 MODIFICATION: Fixed deprecated color
+                            color: Colors.blue.withAlpha(128), // 0.5 opacity
                           ),
                         ),
                       ),
