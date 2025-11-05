@@ -1,0 +1,16 @@
+{
+    "TAP": [
+        "Screen",
+        "Button A",
+        "asd B"
+    ],
+    "SWIPE": [
+        "Left",
+        "Right",
+        "Up"
+    ],
+    "LONG_PRESS": [
+        "Header",
+        "Footer Image"
+    ]
+}
