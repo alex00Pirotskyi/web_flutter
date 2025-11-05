@@ -12,21 +12,35 @@ class AppData extends ChangeNotifier {
   Map<String, List<String>> get settingsData => _settingsData;
   Map<String, Map<String, int>> get resultsData => _resultsData;
 
-  // This simulates "downloading" or loading the settings JSON
-  void loadSettings() {
-    // This is your example JSON structure.
-    // I've simplified the inner values to a list of keys.
-    _settingsData = {
-      "TAP": ["Screen", "Button A", "Icon B"],
-      "SWIPE": ["Left", "Right", "Up"],
-      "LONG_PRESS": ["Header", "Footer Image"],
-    };
+  // --- 💡 MODIFIED FUNCTION ---
+  // This now parses JSON content passed to it from the file uploader
+  void loadSettings(String jsonContent) {
+    try {
+      // Decode the JSON string
+      final Map<String, dynamic> newSettings = json.decode(jsonContent);
 
-    // When we load new settings, we clear the old results
-    _resultsData = {};
+      // Convert the dynamic map to the correct type
+      // This ensures that "TAP": ["val1", "val2"] is correctly parsed
+      _settingsData = Map<String, List<String>>.from(
+        newSettings.map(
+          (key, value) => MapEntry(
+            key,
+            // Ensure the value is treated as a list of strings
+            List<String>.from(value as List<dynamic>),
+          ),
+        ),
+      );
 
-    // Tell all listening widgets (like your pages) to rebuild
-    notifyListeners();
+      // When we load new settings, we clear the old results
+      _resultsData = {};
+
+      // Tell all listening widgets (like your pages) to rebuild
+      notifyListeners();
+    } catch (e) {
+      // Handle bad JSON
+      debugPrint('Error loading settings JSON: $e');
+      // In a real app, you'd show a user-facing error here
+    }
   }
 
   // Clears all the results you've collected

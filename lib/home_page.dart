@@ -1,9 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'app_data.dart';
-import 'counting_page.dart'; // We will create this file
+import 'counting_page.dart';
 import 'dart:convert'; // For JSON and base64
-import 'dart:html' as html; // For web-only download
+import 'dart:html' as html; // For web-only download AND upload
 
 class HomePage extends StatelessWidget {
   const HomePage({super.key});
@@ -22,6 +22,40 @@ class HomePage extends StatelessWidget {
           ..click();
   }
 
+  // --- 💡 NEW FUNCTION ---
+  // This function handles picking a file from the user's computer
+  void _pickAndLoadSettings(BuildContext context) {
+    // 1. Create a file input element
+    final html.FileUploadInputElement uploadInput =
+        html.FileUploadInputElement();
+    uploadInput.accept = '.json,application/json'; // Only allow JSON files
+    uploadInput.click();
+
+    // 2. Listen for when a file is selected
+    uploadInput.onChange.listen((e) {
+      if (uploadInput.files == null || uploadInput.files!.isEmpty) {
+        return; // User cancelled
+      }
+
+      final html.File file = uploadInput.files!.first;
+      final html.FileReader reader = html.FileReader();
+
+      // 3. Listen for when the file is done reading
+      reader.onLoadEnd.listen((e) {
+        // 4. Get the file content as a string
+        final String jsonContent = reader.result as String;
+
+        // 5. Call the loadSettings method in AppData
+        if (jsonContent.isNotEmpty) {
+          context.read<AppData>().loadSettings(jsonContent);
+        }
+      });
+
+      // 6. Read the file as text
+      reader.readAsText(file);
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     // Watch for changes in AppData
@@ -37,11 +71,11 @@ class HomePage extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            // --- The 3 Control Buttons ---
+            // --- 💡 MODIFIED BUTTON ---
             ElevatedButton(
               onPressed: () {
-                // Call the loadSettings method in AppData
-                context.read<AppData>().loadSettings();
+                // Call the new file-picking function
+                _pickAndLoadSettings(context);
               },
               child: const Text('Load Settings JSON'),
             ),
