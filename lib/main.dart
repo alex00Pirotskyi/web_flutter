@@ -21,12 +21,16 @@ class FileSystemItem {
   Uint8List? content;
   String? path;
 
+  // NEW: Track expansion state so it persists across tab switches
+  bool isExpanded;
+
   FileSystemItem({
     required this.name,
     this.isFolder = false,
     this.children = const [],
     this.content,
     this.path,
+    this.isExpanded = false, // Default closed
   });
 }
 
@@ -44,40 +48,37 @@ class CsvDataSet {
 
 class AppState extends ChangeNotifier {
   SharedPreferences? _prefs;
-
-  // Loading State
   bool _isLoading = false;
-  bool get isLoading => _isLoading;
 
   // Navigation
   int _selectedIndex = 0;
-  int get selectedIndex => _selectedIndex;
 
   // File System
   List<FileSystemItem> _rootItems = [];
-  List<FileSystemItem> get rootItems => _rootItems;
-
   FileSystemItem? _selectedFileItem;
-  FileSystemItem? get selectedFileItem => _selectedFileItem;
 
   // Data
   CsvDataSet? _currentCsv;
-  CsvDataSet? get currentCsv => _currentCsv;
 
   // Features
   Set<String> _visibleColumns = {};
-  Set<String> get visibleColumns => _visibleColumns;
 
   // Settings
   bool _isNormalized = false;
-  bool get isNormalized => _isNormalized;
-
   bool _showTooltip = true;
   bool _showMarkers = false;
   double _markerSize = 4.0;
   double _plotHeight = 600.0;
   bool _isLegendExpanded = true;
 
+  // Getters
+  bool get isLoading => _isLoading;
+  int get selectedIndex => _selectedIndex;
+  List<FileSystemItem> get rootItems => _rootItems;
+  FileSystemItem? get selectedFileItem => _selectedFileItem;
+  CsvDataSet? get currentCsv => _currentCsv;
+  Set<String> get visibleColumns => _visibleColumns;
+  bool get isNormalized => _isNormalized;
   bool get showTooltip => _showTooltip;
   bool get showMarkers => _showMarkers;
   double get markerSize => _markerSize;
@@ -90,24 +91,8 @@ class AppState extends ChangeNotifier {
 
   Future<void> _initPrefs() async {
     _prefs = await SharedPreferences.getInstance();
-
-    // Load Normalization Preference
     _isNormalized = _prefs?.getBool('is_normalized') ?? false;
-
     notifyListeners();
-  }
-
-  // --- PERSISTENCE HELPERS ---
-
-  Future<void> _saveSelectionToPrefs() async {
-    if (_prefs == null) return;
-    await _prefs!.setStringList('selected_features', _visibleColumns.toList());
-  }
-
-  Future<Set<String>> _loadSelectionFromPrefs() async {
-    if (_prefs == null) return {};
-    List<String>? saved = _prefs!.getStringList('selected_features');
-    return saved != null ? Set.from(saved) : {};
   }
 
   // --- ACTIONS ---
@@ -122,10 +107,17 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
+  // --- FOLDER EXPANSION LOGIC ---
+
+  void setFolderExpansion(FileSystemItem item, bool expanded) {
+    item.isExpanded = expanded;
+    // We don't necessarily need notifyListeners here as ExpansionTile handles
+    // the animation, but it keeps the model in sync for tab switches.
+  }
+
   // --- FILE MANAGEMENT ---
 
   Future<void> uploadFiles() async {
-    // 1. Start Loading
     _isLoading = true;
     notifyListeners();
 
@@ -149,7 +141,6 @@ class AppState extends ChangeNotifier {
     } catch (e) {
       debugPrint("Error uploading file: $e");
     } finally {
-      // 1. Stop Loading
       _isLoading = false;
       notifyListeners();
     }
@@ -157,10 +148,13 @@ class AppState extends ChangeNotifier {
 
   Future<void> _handleZip(Uint8List bytes, String zipName) async {
     final archive = ZipDecoder().decodeBytes(bytes);
+
+    // Create Root and set isExpanded = true so user sees contents immediately
     FileSystemItem zipRoot = FileSystemItem(
       name: zipName,
       isFolder: true,
       children: [],
+      isExpanded: true,
     );
 
     for (final file in archive) {
@@ -222,15 +216,13 @@ class AppState extends ChangeNotifier {
     return false;
   }
 
-  // --- FILE SELECTION & SMART LOGIC ---
+  // --- SELECTION & PARSING ---
 
   Future<void> selectFile(FileSystemItem item) async {
     if (item.isFolder || item.content == null) return;
 
-    _isLoading = true; // Show loading when parsing large CSVs
+    _isLoading = true;
     notifyListeners();
-
-    // Use Future.delayed to allow UI to render the loading spinner before heavy parsing
     await Future.delayed(const Duration(milliseconds: 50));
 
     try {
@@ -278,14 +270,14 @@ class AppState extends ChangeNotifier {
         _saveSelectionToPrefs();
       }
     } catch (e) {
-      debugPrint("Error parsing file: $e");
+      debugPrint("Error parsing: $e");
     } finally {
       _isLoading = false;
       notifyListeners();
     }
   }
 
-  // --- FEATURE VISIBILITY ---
+  // --- VISIBILITY & PREFS ---
 
   void toggleColumnVisibility(String header) {
     if (_visibleColumns.contains(header)) {
@@ -311,7 +303,17 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
-  // --- SETTINGS ---
+  Future<void> _saveSelectionToPrefs() async {
+    if (_prefs == null) return;
+    await _prefs!.setStringList('selected_features', _visibleColumns.toList());
+  }
+
+  Future<Set<String>> _loadSelectionFromPrefs() async {
+    if (_prefs == null) return {};
+    List<String>? saved = _prefs!.getStringList('selected_features');
+    return saved != null ? Set.from(saved) : {};
+  }
+
   void setNormalization(bool value) {
     _isNormalized = value;
     _prefs?.setBool('is_normalized', value);
@@ -527,7 +529,6 @@ class ExplorerSidebar extends StatelessWidget {
         ),
         const Divider(color: Colors.grey),
 
-        // 1. Progress Indicator
         if (state.isLoading)
           const Expanded(
             child: Center(
@@ -571,6 +572,7 @@ class FileNode extends StatelessWidget {
 
     if (item.isFolder) {
       return ExpansionTile(
+        key: PageStorageKey(item.name), // Helps preserve state within same view
         leading: const Icon(Icons.folder, size: 18, color: Colors.orange),
         title: Text(
           item.name,
@@ -578,6 +580,15 @@ class FileNode extends StatelessWidget {
           overflow: TextOverflow.ellipsis,
         ),
         childrenPadding: const EdgeInsets.only(left: 10),
+
+        // 1. Initialize expansion based on model state
+        initiallyExpanded: item.isExpanded,
+
+        // 2. Update model state when user toggles
+        onExpansionChanged: (isExpanded) {
+          context.read<AppState>().setFolderExpansion(item, isExpanded);
+        },
+
         trailing: IconButton(
           icon: const Icon(Icons.delete_outline, size: 16, color: Colors.grey),
           onPressed: () => state.removeFile(item),
@@ -813,7 +824,6 @@ class ChartArea extends StatelessWidget {
       );
     }
 
-    // Prepare Data
     int rowCount = state.currentCsv!.data.values.first.length;
     List<int> xValues = List.generate(rowCount, (index) => index);
 
@@ -832,7 +842,6 @@ class ChartArea extends StatelessWidget {
     return ListView(
       padding: const EdgeInsets.all(20),
       children: [
-        // The Chart
         SizedBox(
           height: state.plotHeight,
           child: SfCartesianChart(
@@ -899,7 +908,6 @@ class ChartArea extends StatelessWidget {
         const SizedBox(height: 10),
         const Divider(),
 
-        // LEGEND HEADER
         InkWell(
           onTap: () => state.toggleLegend(),
           borderRadius: BorderRadius.circular(8),
@@ -923,7 +931,6 @@ class ChartArea extends StatelessWidget {
           ),
         ),
 
-        // LEGEND GRID
         if (state.isLegendExpanded)
           GridView.builder(
             shrinkWrap: true,
@@ -953,7 +960,6 @@ class ChartArea extends StatelessWidget {
               );
             },
           ),
-
         const SizedBox(height: 50),
       ],
     );
@@ -997,7 +1003,6 @@ class ChartArea extends StatelessWidget {
           yValueMapper: (ChartDataPoint data, _) => data.y,
           color: palette[colorIndex % palette.length],
           width: 1.5,
-          // 2. Disable Animation
           animationDuration: 0,
           markerSettings: MarkerSettings(
             isVisible: state.showMarkers,
