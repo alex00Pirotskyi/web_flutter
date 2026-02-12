@@ -1,17 +1,348 @@
+import 'dart:convert';
+import 'dart:math';
+import 'dart:typed_data';
+
+import 'package:archive/archive.dart';
+import 'package:csv/csv.dart';
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
-import 'app_data.dart';
-import 'home_page.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:syncfusion_flutter_charts/charts.dart';
+import 'package:csv/csv.dart';
+
+// -----------------------------------------------------------------------------
+// 1. DATA MODELS
+// -----------------------------------------------------------------------------
+
+class FileSystemItem {
+  String name;
+  bool isFolder;
+  List<FileSystemItem> children;
+  Uint8List? content;
+  String? path;
+
+  FileSystemItem({
+    required this.name,
+    this.isFolder = false,
+    this.children = const [],
+    this.content,
+    this.path,
+  });
+}
+
+class CsvDataSet {
+  String fileName;
+  List<String> headers;
+  Map<String, List<double>> data;
+
+  CsvDataSet(this.fileName, this.headers, this.data);
+}
+
+// -----------------------------------------------------------------------------
+// 2. APP STATE (PROVIDER)
+// -----------------------------------------------------------------------------
+
+class AppState extends ChangeNotifier {
+  SharedPreferences? _prefs;
+
+  // Navigation
+  int _selectedIndex = 0;
+  int get selectedIndex => _selectedIndex;
+
+  // File System
+  List<FileSystemItem> _rootItems = [];
+  List<FileSystemItem> get rootItems => _rootItems;
+
+  FileSystemItem? _selectedFileItem;
+  FileSystemItem? get selectedFileItem => _selectedFileItem;
+
+  // Data
+  CsvDataSet? _currentCsv;
+  CsvDataSet? get currentCsv => _currentCsv;
+
+  // Features
+  Set<String> _visibleColumns = {};
+  Set<String> get visibleColumns => _visibleColumns;
+
+  // Settings
+  bool _isNormalized = false;
+  bool get isNormalized => _isNormalized;
+
+  bool _showTooltip = true;
+  bool _showMarkers = false;
+  double _markerSize = 4.0;
+  double _plotHeight = 600.0;
+  bool _isLegendExpanded = true;
+
+  bool get showTooltip => _showTooltip;
+  bool get showMarkers => _showMarkers;
+  double get markerSize => _markerSize;
+  double get plotHeight => _plotHeight;
+  bool get isLegendExpanded => _isLegendExpanded;
+
+  AppState() {
+    _initPrefs();
+  }
+
+  Future<void> _initPrefs() async {
+    _prefs = await SharedPreferences.getInstance();
+    // 2. If nothing saved, default is empty (already initialized to {})
+    // We load saved columns, but they only apply if they match the loaded file later.
+  }
+
+  // --- PERSISTENCE HELPERS ---
+
+  Future<void> _saveSelectionToPrefs() async {
+    if (_prefs == null) return;
+    // Save current selection list
+    await _prefs!.setStringList('selected_features', _visibleColumns.toList());
+  }
+
+  Future<Set<String>> _loadSelectionFromPrefs() async {
+    if (_prefs == null) return {};
+    List<String>? saved = _prefs!.getStringList('selected_features');
+    return saved != null ? Set.from(saved) : {};
+  }
+
+  // --- ACTIONS ---
+
+  void setNavIndex(int index) {
+    _selectedIndex = index;
+    notifyListeners();
+  }
+
+  void toggleLegend() {
+    _isLegendExpanded = !_isLegendExpanded;
+    notifyListeners();
+  }
+
+  // --- FILE MANAGEMENT ---
+
+  Future<void> uploadFiles() async {
+    FilePickerResult? result = await FilePicker.platform.pickFiles(
+      allowMultiple: true,
+      type: FileType.custom,
+      allowedExtensions: ['csv', 'zip'],
+      withData: true,
+    );
+
+    if (result != null) {
+      for (var file in result.files) {
+        if (file.extension == 'zip') {
+          await _handleZip(file.bytes!, file.name);
+        } else if (file.extension == 'csv') {
+          _addFileToRoot(file.name, file.bytes!);
+        }
+      }
+      notifyListeners();
+    }
+  }
+
+  Future<void> _handleZip(Uint8List bytes, String zipName) async {
+    final archive = ZipDecoder().decodeBytes(bytes);
+    FileSystemItem zipRoot = FileSystemItem(
+      name: zipName,
+      isFolder: true,
+      children: [],
+    );
+
+    for (final file in archive) {
+      if (file.isFile && file.name.endsWith(".csv")) {
+        final content = file.content as List<int>;
+        zipRoot.children.add(
+          FileSystemItem(
+            name: file.name,
+            isFolder: false,
+            content: Uint8List.fromList(content),
+            path: "$zipName/${file.name}",
+          ),
+        );
+      }
+    }
+    _rootItems.add(zipRoot);
+  }
+
+  void _addFileToRoot(String name, Uint8List bytes) {
+    _rootItems.add(
+      FileSystemItem(name: name, isFolder: false, content: bytes, path: name),
+    );
+  }
+
+  // 5. Clear All Files
+  void clearAllFiles() {
+    _rootItems.clear();
+    _currentCsv = null;
+    _selectedFileItem = null;
+    _visibleColumns.clear();
+    notifyListeners();
+  }
+
+  // 6. Remove Specific File (Recursive search)
+  void removeFile(FileSystemItem itemToRemove) {
+    // Check roots first
+    if (_rootItems.contains(itemToRemove)) {
+      _rootItems.remove(itemToRemove);
+    } else {
+      // Recursive check in children
+      for (var root in _rootItems) {
+        _removeFromChildren(root, itemToRemove);
+      }
+    }
+
+    // If we deleted the currently selected file, clear the view
+    if (_selectedFileItem == itemToRemove) {
+      _currentCsv = null;
+      _selectedFileItem = null;
+      _visibleColumns.clear();
+    }
+    notifyListeners();
+  }
+
+  bool _removeFromChildren(FileSystemItem parent, FileSystemItem target) {
+    if (parent.children.contains(target)) {
+      parent.children.remove(target);
+      return true;
+    }
+    for (var child in parent.children) {
+      bool found = _removeFromChildren(child, target);
+      if (found) return true;
+    }
+    return false;
+  }
+
+  // --- FILE SELECTION & SMART LOGIC ---
+
+  Future<void> selectFile(FileSystemItem item) async {
+    if (item.isFolder || item.content == null) return;
+
+    _selectedFileItem = item;
+
+    // Parse CSV
+    String csvString = utf8.decode(item.content!);
+    List<List<dynamic>> rows = const CsvToListConverter(
+      eol: '\n',
+    ).convert(csvString);
+
+    if (rows.isEmpty) return;
+
+    List<String> headers = rows.first.map((e) => e.toString().trim()).toList();
+    Map<String, List<double>> parsedData = {};
+
+    for (var h in headers) parsedData[h] = [];
+
+    for (int i = 1; i < rows.length; i++) {
+      var row = rows[i];
+      for (int j = 0; j < headers.length; j++) {
+        if (j < row.length) {
+          var val = double.tryParse(row[j].toString()) ?? 0.0;
+          parsedData[headers[j]]?.add(val);
+        }
+      }
+    }
+
+    _currentCsv = CsvDataSet(item.name, headers, parsedData);
+
+    // 3. & 4. Smart Selection Logic
+    // First, try to load what was saved in Shared Preferences
+    Set<String> savedSelection = await _loadSelectionFromPrefs();
+
+    // However, if we are switching files, we might want to keep the IN-MEMORY selection
+    // if it's relevant, or fall back to saved.
+    // The prompt says: "switching between files... keep what already selected".
+    // So we use the current `_visibleColumns` (which is in memory) if not empty.
+    // If it is empty (app start), we use `savedSelection`.
+
+    Set<String> candidateSelection = _visibleColumns.isNotEmpty
+        ? _visibleColumns
+        : savedSelection;
+
+    // Filter: Only keep columns that actually exist in the NEW file
+    Set<String> validSelection = {};
+    for (String col in candidateSelection) {
+      if (headers.contains(col)) {
+        validSelection.add(col);
+      }
+    }
+
+    _visibleColumns = validSelection;
+
+    // Update preferences with this new valid selection
+    _saveSelectedColumns();
+
+    _isNormalized = false;
+    notifyListeners();
+  }
+
+  // --- FEATURE VISIBILITY ---
+
+  void toggleColumnVisibility(String header) {
+    if (_visibleColumns.contains(header)) {
+      _visibleColumns.remove(header);
+    } else {
+      _visibleColumns.add(header);
+    }
+    // 1. Save to shared preference immediately on change
+    _saveSelectedColumns();
+    notifyListeners();
+  }
+
+  void selectAllFeatures() {
+    if (_currentCsv != null) {
+      _visibleColumns = Set.from(_currentCsv!.headers);
+      _saveSelectedColumns();
+      notifyListeners();
+    }
+  }
+
+  void unselectAllFeatures() {
+    _visibleColumns.clear();
+    _saveSelectedColumns();
+    notifyListeners();
+  }
+
+  void _saveSelectedColumns() {
+    _saveSelectionToPrefs();
+  }
+
+  // --- SETTINGS ---
+  void setNormalization(bool value) {
+    _isNormalized = value;
+    notifyListeners();
+  }
+
+  void setTooltipEnabled(bool value) {
+    _showTooltip = value;
+    notifyListeners();
+  }
+
+  void setShowMarkers(bool value) {
+    _showMarkers = value;
+    notifyListeners();
+  }
+
+  void setMarkerSize(double value) {
+    _markerSize = value;
+    notifyListeners();
+  }
+
+  void setPlotHeight(double h) {
+    _plotHeight = h;
+    notifyListeners();
+  }
+}
+
+// -----------------------------------------------------------------------------
+// 3. MAIN UI
+// -----------------------------------------------------------------------------
 
 void main() async {
+  // Ensure binding for SharedPreferences
   WidgetsFlutterBinding.ensureInitialized();
-  
-  final appData = AppData();
-  await appData.loadData(); // Load data before running
 
   runApp(
-    ChangeNotifierProvider.value(
-      value: appData,
+    MultiProvider(
+      providers: [ChangeNotifierProvider(create: (_) => AppState())],
       child: const MyApp(),
     ),
   );
@@ -23,39 +354,644 @@ class MyApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Data Collector',
       debugShowCheckedModeBanner: false,
-      theme: ThemeData(
-        scaffoldBackgroundColor: const Color(0xFFF0EAD6), 
-        colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepPurple),
-        useMaterial3: true,
-        pageTransitionsTheme: const PageTransitionsTheme(
-          builders: {
-            // All platforms will use a fade transition
-            TargetPlatform.android: FadeUpwardsPageTransitionsBuilder(),
-            TargetPlatform.iOS: FadeUpwardsPageTransitionsBuilder(),
-            TargetPlatform.macOS: FadeUpwardsPageTransitionsBuilder(),
-            TargetPlatform.windows: FadeUpwardsPageTransitionsBuilder(),
-            TargetPlatform.linux: FadeUpwardsPageTransitionsBuilder(),
-          },
-        ),
+      title: 'Flutter CSV Analyzer',
+      theme: ThemeData.dark().copyWith(
+        scaffoldBackgroundColor: const Color(0xFF1E1E1E),
+        cardColor: const Color(0xFF252526),
         appBarTheme: const AppBarTheme(
-          backgroundColor: Color(0xFFF0EAD6), 
-          foregroundColor: Colors.black87,
+          backgroundColor: Color(0xFF2D2D2D),
           elevation: 0,
-          scrolledUnderElevation: 1,
-        ),
-        
-        // 💡 MODIFICATION: Changed CardTheme() to CardThemeData()
-        cardTheme: CardThemeData(
-          color: Colors.white,
-          elevation: 2,
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(12),
-          ),
         ),
       ),
-      home: const HomePage(),
+      home: const MainLayout(),
     );
   }
+}
+
+class MainLayout extends StatelessWidget {
+  const MainLayout({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final state = context.watch<AppState>();
+
+    return Scaffold(
+      appBar: AppBar(
+        title: Text(
+          state.currentCsv?.fileName ??
+              "Flutter CSV Analyzer (No File Selected)",
+          style: const TextStyle(fontSize: 14),
+        ),
+      ),
+      body: Row(
+        children: [
+          NavigationRail(
+            backgroundColor: const Color(0xFF333333),
+            selectedIndex: state.selectedIndex,
+            onDestinationSelected: state.setNavIndex,
+            labelType: NavigationRailLabelType.all,
+            destinations: const [
+              NavigationRailDestination(
+                icon: Icon(Icons.folder_open),
+                label: Text('Explorer'),
+              ),
+              NavigationRailDestination(
+                icon: Icon(Icons.checklist),
+                label: Text('Features'),
+              ),
+              NavigationRailDestination(
+                icon: Icon(Icons.analytics),
+                label: Text('Process'),
+              ),
+              NavigationRailDestination(
+                icon: Icon(Icons.settings),
+                label: Text('Settings'),
+              ),
+            ],
+          ),
+
+          Container(
+            width: 300,
+            color: const Color(0xFF252526),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  color: const Color(0xFF333333),
+                  width: double.infinity,
+                  child: Text(
+                    _getSidebarTitle(state.selectedIndex),
+                    style: const TextStyle(
+                      fontWeight: FontWeight.bold,
+                      fontSize: 11,
+                      letterSpacing: 1.0,
+                    ),
+                  ),
+                ),
+                Expanded(child: _buildSidebarContent(context, state)),
+              ],
+            ),
+          ),
+
+          Expanded(
+            child: Container(
+              color: const Color(0xFF1E1E1E),
+              child: const ChartArea(),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  String _getSidebarTitle(int index) {
+    switch (index) {
+      case 0:
+        return "EXPLORER";
+      case 1:
+        return "VISIBLE FEATURES";
+      case 2:
+        return "NORMALIZATION";
+      case 3:
+        return "SETTINGS";
+      default:
+        return "";
+    }
+  }
+
+  Widget _buildSidebarContent(BuildContext context, AppState state) {
+    switch (state.selectedIndex) {
+      case 0:
+        return const ExplorerSidebar();
+      case 1:
+        return const FeatureSelectorSidebar();
+      case 2:
+        return const NormalizationSidebar();
+      case 3:
+        return const SettingsSidebar();
+      default:
+        return const SizedBox();
+    }
+  }
+}
+
+// -----------------------------------------------------------------------------
+// 4. SIDEBAR CONTENTS
+// -----------------------------------------------------------------------------
+
+class ExplorerSidebar extends StatelessWidget {
+  const ExplorerSidebar({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final state = context.watch<AppState>();
+    return Column(
+      children: [
+        Padding(
+          padding: const EdgeInsets.all(8.0),
+          child: Column(
+            children: [
+              ElevatedButton.icon(
+                icon: const Icon(Icons.upload_file),
+                label: const Text("Upload Files/Zip"),
+                style: ElevatedButton.styleFrom(
+                  minimumSize: const Size(double.infinity, 40),
+                  backgroundColor: Colors.blue[700],
+                  foregroundColor: Colors.white,
+                ),
+                onPressed: () => state.uploadFiles(),
+              ),
+              const SizedBox(height: 8),
+              // 5. Clear All Button
+              if (state.rootItems.isNotEmpty)
+                OutlinedButton.icon(
+                  icon: const Icon(Icons.delete_sweep, size: 18),
+                  label: const Text("Clear All Files"),
+                  style: OutlinedButton.styleFrom(
+                    minimumSize: const Size(double.infinity, 35),
+                    foregroundColor: Colors.redAccent,
+                    side: const BorderSide(color: Colors.redAccent),
+                  ),
+                  onPressed: () => state.clearAllFiles(),
+                ),
+            ],
+          ),
+        ),
+        const Divider(color: Colors.grey),
+        Expanded(
+          child: state.rootItems.isEmpty
+              ? const Center(
+                  child: Text(
+                    "No files uploaded",
+                    style: TextStyle(color: Colors.grey),
+                  ),
+                )
+              : ListView.builder(
+                  itemCount: state.rootItems.length,
+                  itemBuilder: (ctx, i) => FileNode(item: state.rootItems[i]),
+                ),
+        ),
+      ],
+    );
+  }
+}
+
+class FileNode extends StatelessWidget {
+  final FileSystemItem item;
+  const FileNode({super.key, required this.item});
+
+  @override
+  Widget build(BuildContext context) {
+    final state = context.watch<AppState>();
+    bool isSelected = state.selectedFileItem == item;
+
+    if (item.isFolder) {
+      return ExpansionTile(
+        leading: const Icon(Icons.folder, size: 18, color: Colors.orange),
+        title: Text(
+          item.name,
+          style: const TextStyle(fontSize: 13),
+          overflow: TextOverflow.ellipsis,
+        ),
+        childrenPadding: const EdgeInsets.only(left: 10),
+        // 6. Option to remove folder (zip root)
+        trailing: IconButton(
+          icon: const Icon(Icons.delete_outline, size: 16, color: Colors.grey),
+          onPressed: () => state.removeFile(item),
+        ),
+        children: item.children.map((child) => FileNode(item: child)).toList(),
+      );
+    } else {
+      return Container(
+        color: isSelected ? Colors.blue.withOpacity(0.2) : Colors.transparent,
+        child: ListTile(
+          leading: Icon(
+            Icons.insert_drive_file,
+            size: 18,
+            color: isSelected ? Colors.blueAccent : Colors.blueGrey,
+          ),
+          title: Text(
+            item.name,
+            style: TextStyle(
+              fontSize: 13,
+              color: isSelected ? Colors.white : Colors.white70,
+            ),
+            overflow: TextOverflow.ellipsis,
+          ),
+          dense: true,
+          // 6. Option to remove file
+          trailing: IconButton(
+            icon: const Icon(
+              Icons.delete_outline,
+              size: 16,
+              color: Colors.grey,
+            ),
+            onPressed: () => state.removeFile(item),
+          ),
+          onTap: () => context.read<AppState>().selectFile(item),
+        ),
+      );
+    }
+  }
+}
+
+class FeatureSelectorSidebar extends StatelessWidget {
+  const FeatureSelectorSidebar({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final state = context.watch<AppState>();
+
+    if (state.currentCsv == null) {
+      return const Center(
+        child: Text("No CSV Selected.", textAlign: TextAlign.center),
+      );
+    }
+
+    return Column(
+      children: [
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 8.0, vertical: 4.0),
+          child: Row(
+            children: [
+              Expanded(
+                child: TextButton(
+                  onPressed: state.selectAllFeatures,
+                  child: const Text(
+                    "Select All",
+                    style: TextStyle(fontSize: 12),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: TextButton(
+                  onPressed: state.unselectAllFeatures,
+                  child: const Text(
+                    "Unselect All",
+                    style: TextStyle(fontSize: 12, color: Colors.redAccent),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+        const Divider(height: 1),
+        Expanded(
+          child: ListView.builder(
+            itemCount: state.currentCsv!.headers.length,
+            itemBuilder: (context, index) {
+              String header = state.currentCsv!.headers[index];
+              bool isChecked = state.visibleColumns.contains(header);
+
+              return Theme(
+                data: ThemeData.dark().copyWith(
+                  unselectedWidgetColor: Colors.grey,
+                ),
+                child: CheckboxListTile(
+                  title: Text(
+                    header,
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: isChecked ? Colors.white : Colors.grey,
+                    ),
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  value: isChecked,
+                  activeColor: Colors.blueAccent,
+                  controlAffinity: ListTileControlAffinity.leading,
+                  contentPadding: const EdgeInsets.symmetric(horizontal: 8),
+                  onChanged: (val) => state.toggleColumnVisibility(header),
+                ),
+              );
+            },
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class NormalizationSidebar extends StatelessWidget {
+  const NormalizationSidebar({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final state = context.watch<AppState>();
+    return Padding(
+      padding: const EdgeInsets.all(16.0),
+      child: Column(
+        children: [
+          const Text(
+            "Normalize data to range [-1.0, 1.0]",
+            style: TextStyle(color: Colors.grey, fontSize: 12),
+          ),
+          const SizedBox(height: 20),
+          SwitchListTile(
+            title: const Text("Enable Normalization"),
+            subtitle: Text(state.isNormalized ? "Active" : "Inactive"),
+            value: state.isNormalized,
+            activeColor: Colors.green,
+            onChanged: (val) => state.setNormalization(val),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class SettingsSidebar extends StatelessWidget {
+  const SettingsSidebar({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final state = context.watch<AppState>();
+    return ListView(
+      padding: const EdgeInsets.all(16),
+      children: [
+        const Text(
+          "General Settings",
+          style: TextStyle(fontWeight: FontWeight.bold),
+        ),
+        SwitchListTile(
+          contentPadding: EdgeInsets.zero,
+          title: const Text("Enable Tooltip"),
+          value: state.showTooltip,
+          onChanged: (val) => state.setTooltipEnabled(val),
+        ),
+        const Divider(),
+        const Text(
+          "Marker Settings",
+          style: TextStyle(fontWeight: FontWeight.bold),
+        ),
+        SwitchListTile(
+          contentPadding: EdgeInsets.zero,
+          title: const Text("Show Data Points"),
+          value: state.showMarkers,
+          onChanged: (val) => state.setShowMarkers(val),
+        ),
+        if (state.showMarkers) ...[
+          Text("Marker Size: ${state.markerSize.toInt()}"),
+          Slider(
+            min: 2,
+            max: 10,
+            value: state.markerSize,
+            onChanged: (v) => state.setMarkerSize(v),
+          ),
+        ],
+        const Divider(),
+        const Text("Layout", style: TextStyle(fontWeight: FontWeight.bold)),
+        const SizedBox(height: 10),
+        Text("Chart Height: ${state.plotHeight.toInt()}"),
+        Slider(
+          min: 200,
+          max: 1500,
+          value: state.plotHeight,
+          onChanged: (v) => state.setPlotHeight(v),
+        ),
+      ],
+    );
+  }
+}
+
+// -----------------------------------------------------------------------------
+// 5. CHART AREA
+// -----------------------------------------------------------------------------
+
+class ChartArea extends StatelessWidget {
+  const ChartArea({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final state = context.watch<AppState>();
+
+    if (state.currentCsv == null) {
+      return const Center(
+        child: Text(
+          "Select a CSV file to view chart",
+          style: TextStyle(color: Colors.grey),
+        ),
+      );
+    }
+
+    if (state.visibleColumns.isEmpty) {
+      return Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: const [
+            Icon(Icons.checklist_rtl, size: 64, color: Colors.grey),
+            SizedBox(height: 16),
+            Text(
+              "No features selected.",
+              style: TextStyle(fontSize: 18, color: Colors.white70),
+            ),
+          ],
+        ),
+      );
+    }
+
+    // Prepare Data
+    int rowCount = state.currentCsv!.data.values.first.length;
+    List<int> xValues = List.generate(rowCount, (index) => index);
+
+    final List<Color> palette = [
+      Colors.cyanAccent,
+      Colors.orangeAccent,
+      Colors.purpleAccent,
+      Colors.greenAccent,
+      Colors.redAccent,
+      Colors.yellowAccent,
+      Colors.pinkAccent,
+      Colors.tealAccent,
+      Colors.indigoAccent,
+    ];
+
+    return ListView(
+      padding: const EdgeInsets.all(20),
+      children: [
+        // The Chart
+        SizedBox(
+          height: state.plotHeight,
+          child: SfCartesianChart(
+            legend: const Legend(isVisible: false),
+            zoomPanBehavior: ZoomPanBehavior(
+              enablePinching: true,
+              enablePanning: true,
+              enableSelectionZooming: true,
+              enableMouseWheelZooming: true,
+              zoomMode: ZoomMode.x,
+            ),
+            tooltipBehavior: state.showTooltip
+                ? TooltipBehavior(
+                    enable: true,
+                    builder: (data, point, series, pointIndex, seriesIndex) {
+                      return Container(
+                        padding: const EdgeInsets.all(6),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF252526),
+                          border: Border.all(color: Colors.white24),
+                          borderRadius: BorderRadius.circular(4),
+                        ),
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Text(
+                              (series as LineSeries).name ?? "-",
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 10,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                            Text(
+                              "Y: ${point.y?.toStringAsFixed(3)}",
+                              style: const TextStyle(
+                                color: Colors.blueAccent,
+                                fontSize: 11,
+                              ),
+                            ),
+                          ],
+                        ),
+                      );
+                    },
+                  )
+                : null,
+            primaryXAxis: const NumericAxis(
+              title: AxisTitle(text: 'Index'),
+              majorGridLines: MajorGridLines(width: 0.5, color: Colors.white10),
+            ),
+            primaryYAxis: NumericAxis(
+              title: AxisTitle(text: state.isNormalized ? 'Norm' : 'Raw'),
+              majorGridLines: const MajorGridLines(
+                width: 0.5,
+                color: Colors.white10,
+              ),
+              minimum: state.isNormalized ? -1.1 : null,
+              maximum: state.isNormalized ? 1.1 : null,
+            ),
+            series: _buildSeries(state, xValues, palette),
+          ),
+        ),
+
+        const SizedBox(height: 10),
+        const Divider(),
+
+        // LEGEND HEADER
+        InkWell(
+          onTap: () => state.toggleLegend(),
+          borderRadius: BorderRadius.circular(8),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 8),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                const Text(
+                  "Legend (Active Features)",
+                  style: TextStyle(fontWeight: FontWeight.bold),
+                ),
+                Icon(
+                  state.isLegendExpanded
+                      ? Icons.keyboard_arrow_up
+                      : Icons.keyboard_arrow_down,
+                  color: Colors.white70,
+                ),
+              ],
+            ),
+          ),
+        ),
+
+        // LEGEND GRID
+        if (state.isLegendExpanded)
+          GridView.builder(
+            shrinkWrap: true,
+            physics: const NeverScrollableScrollPhysics(),
+            gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+              crossAxisCount: 4,
+              childAspectRatio: 5,
+              crossAxisSpacing: 10,
+              mainAxisSpacing: 10,
+            ),
+            itemCount: state.visibleColumns.length,
+            itemBuilder: (context, index) {
+              String name = state.visibleColumns.elementAt(index);
+              Color color = palette[index % palette.length];
+              return Row(
+                children: [
+                  Container(width: 12, height: 12, color: color),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      name,
+                      style: const TextStyle(fontSize: 11),
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                ],
+              );
+            },
+          ),
+
+        const SizedBox(height: 50),
+      ],
+    );
+  }
+
+  List<CartesianSeries> _buildSeries(
+    AppState state,
+    List<int> xValues,
+    List<Color> palette,
+  ) {
+    List<CartesianSeries> seriesList = [];
+    int colorIndex = 0;
+
+    for (String header in state.visibleColumns) {
+      List<double>? rawData = state.currentCsv!.data[header];
+      if (rawData == null) continue;
+
+      List<ChartDataPoint> points = [];
+      double maxVal = 1.0;
+
+      if (state.isNormalized) {
+        double maxInCol = rawData.reduce(max);
+        double minInCol = rawData.reduce(min);
+        maxVal = max(maxInCol.abs(), minInCol.abs());
+        if (maxVal == 0) maxVal = 1.0;
+      }
+
+      for (int i = 0; i < rawData.length; i++) {
+        double y = rawData[i];
+        if (state.isNormalized) {
+          y = y / maxVal;
+        }
+        points.add(ChartDataPoint(i, y));
+      }
+
+      seriesList.add(
+        LineSeries<ChartDataPoint, int>(
+          name: header,
+          dataSource: points,
+          xValueMapper: (ChartDataPoint data, _) => data.x,
+          yValueMapper: (ChartDataPoint data, _) => data.y,
+          color: palette[colorIndex % palette.length],
+          width: 1.5,
+          markerSettings: MarkerSettings(
+            isVisible: state.showMarkers,
+            width: state.markerSize,
+            height: state.markerSize,
+          ),
+        ),
+      );
+      colorIndex++;
+    }
+    return seriesList;
+  }
+}
+
+class ChartDataPoint {
+  final int x;
+  final double y;
+  ChartDataPoint(this.x, this.y);
 }
