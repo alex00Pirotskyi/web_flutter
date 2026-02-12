@@ -9,7 +9,6 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:syncfusion_flutter_charts/charts.dart';
-import 'package:csv/csv.dart';
 
 // -----------------------------------------------------------------------------
 // 1. DATA MODELS
@@ -45,6 +44,10 @@ class CsvDataSet {
 
 class AppState extends ChangeNotifier {
   SharedPreferences? _prefs;
+
+  // Loading State
+  bool _isLoading = false;
+  bool get isLoading => _isLoading;
 
   // Navigation
   int _selectedIndex = 0;
@@ -87,15 +90,17 @@ class AppState extends ChangeNotifier {
 
   Future<void> _initPrefs() async {
     _prefs = await SharedPreferences.getInstance();
-    // 2. If nothing saved, default is empty (already initialized to {})
-    // We load saved columns, but they only apply if they match the loaded file later.
+
+    // Load Normalization Preference
+    _isNormalized = _prefs?.getBool('is_normalized') ?? false;
+
+    notifyListeners();
   }
 
   // --- PERSISTENCE HELPERS ---
 
   Future<void> _saveSelectionToPrefs() async {
     if (_prefs == null) return;
-    // Save current selection list
     await _prefs!.setStringList('selected_features', _visibleColumns.toList());
   }
 
@@ -120,21 +125,32 @@ class AppState extends ChangeNotifier {
   // --- FILE MANAGEMENT ---
 
   Future<void> uploadFiles() async {
-    FilePickerResult? result = await FilePicker.platform.pickFiles(
-      allowMultiple: true,
-      type: FileType.custom,
-      allowedExtensions: ['csv', 'zip'],
-      withData: true,
-    );
+    // 1. Start Loading
+    _isLoading = true;
+    notifyListeners();
 
-    if (result != null) {
-      for (var file in result.files) {
-        if (file.extension == 'zip') {
-          await _handleZip(file.bytes!, file.name);
-        } else if (file.extension == 'csv') {
-          _addFileToRoot(file.name, file.bytes!);
+    try {
+      FilePickerResult? result = await FilePicker.platform.pickFiles(
+        allowMultiple: true,
+        type: FileType.custom,
+        allowedExtensions: ['csv', 'zip'],
+        withData: true,
+      );
+
+      if (result != null) {
+        for (var file in result.files) {
+          if (file.extension == 'zip') {
+            await _handleZip(file.bytes!, file.name);
+          } else if (file.extension == 'csv') {
+            _addFileToRoot(file.name, file.bytes!);
+          }
         }
       }
+    } catch (e) {
+      debugPrint("Error uploading file: $e");
+    } finally {
+      // 1. Stop Loading
+      _isLoading = false;
       notifyListeners();
     }
   }
@@ -169,7 +185,6 @@ class AppState extends ChangeNotifier {
     );
   }
 
-  // 5. Clear All Files
   void clearAllFiles() {
     _rootItems.clear();
     _currentCsv = null;
@@ -178,19 +193,15 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
-  // 6. Remove Specific File (Recursive search)
   void removeFile(FileSystemItem itemToRemove) {
-    // Check roots first
     if (_rootItems.contains(itemToRemove)) {
       _rootItems.remove(itemToRemove);
     } else {
-      // Recursive check in children
       for (var root in _rootItems) {
         _removeFromChildren(root, itemToRemove);
       }
     }
 
-    // If we deleted the currently selected file, clear the view
     if (_selectedFileItem == itemToRemove) {
       _currentCsv = null;
       _selectedFileItem = null;
@@ -216,62 +227,62 @@ class AppState extends ChangeNotifier {
   Future<void> selectFile(FileSystemItem item) async {
     if (item.isFolder || item.content == null) return;
 
-    _selectedFileItem = item;
-
-    // Parse CSV
-    String csvString = utf8.decode(item.content!);
-    List<List<dynamic>> rows = const CsvToListConverter(
-      eol: '\n',
-    ).convert(csvString);
-
-    if (rows.isEmpty) return;
-
-    List<String> headers = rows.first.map((e) => e.toString().trim()).toList();
-    Map<String, List<double>> parsedData = {};
-
-    for (var h in headers) parsedData[h] = [];
-
-    for (int i = 1; i < rows.length; i++) {
-      var row = rows[i];
-      for (int j = 0; j < headers.length; j++) {
-        if (j < row.length) {
-          var val = double.tryParse(row[j].toString()) ?? 0.0;
-          parsedData[headers[j]]?.add(val);
-        }
-      }
-    }
-
-    _currentCsv = CsvDataSet(item.name, headers, parsedData);
-
-    // 3. & 4. Smart Selection Logic
-    // First, try to load what was saved in Shared Preferences
-    Set<String> savedSelection = await _loadSelectionFromPrefs();
-
-    // However, if we are switching files, we might want to keep the IN-MEMORY selection
-    // if it's relevant, or fall back to saved.
-    // The prompt says: "switching between files... keep what already selected".
-    // So we use the current `_visibleColumns` (which is in memory) if not empty.
-    // If it is empty (app start), we use `savedSelection`.
-
-    Set<String> candidateSelection = _visibleColumns.isNotEmpty
-        ? _visibleColumns
-        : savedSelection;
-
-    // Filter: Only keep columns that actually exist in the NEW file
-    Set<String> validSelection = {};
-    for (String col in candidateSelection) {
-      if (headers.contains(col)) {
-        validSelection.add(col);
-      }
-    }
-
-    _visibleColumns = validSelection;
-
-    // Update preferences with this new valid selection
-    _saveSelectedColumns();
-
-    _isNormalized = false;
+    _isLoading = true; // Show loading when parsing large CSVs
     notifyListeners();
+
+    // Use Future.delayed to allow UI to render the loading spinner before heavy parsing
+    await Future.delayed(const Duration(milliseconds: 50));
+
+    try {
+      _selectedFileItem = item;
+
+      String csvString = utf8.decode(item.content!);
+      List<List<dynamic>> rows = const CsvToListConverter(
+        eol: '\n',
+      ).convert(csvString);
+
+      if (rows.isNotEmpty) {
+        List<String> headers = rows.first
+            .map((e) => e.toString().trim())
+            .toList();
+        Map<String, List<double>> parsedData = {};
+
+        for (var h in headers) parsedData[h] = [];
+
+        for (int i = 1; i < rows.length; i++) {
+          var row = rows[i];
+          for (int j = 0; j < headers.length; j++) {
+            if (j < row.length) {
+              var val = double.tryParse(row[j].toString()) ?? 0.0;
+              parsedData[headers[j]]?.add(val);
+            }
+          }
+        }
+
+        _currentCsv = CsvDataSet(item.name, headers, parsedData);
+
+        // Smart Selection Logic
+        Set<String> savedSelection = await _loadSelectionFromPrefs();
+        Set<String> candidateSelection = _visibleColumns.isNotEmpty
+            ? _visibleColumns
+            : savedSelection;
+
+        Set<String> validSelection = {};
+        for (String col in candidateSelection) {
+          if (headers.contains(col)) {
+            validSelection.add(col);
+          }
+        }
+
+        _visibleColumns = validSelection;
+        _saveSelectionToPrefs();
+      }
+    } catch (e) {
+      debugPrint("Error parsing file: $e");
+    } finally {
+      _isLoading = false;
+      notifyListeners();
+    }
   }
 
   // --- FEATURE VISIBILITY ---
@@ -282,32 +293,28 @@ class AppState extends ChangeNotifier {
     } else {
       _visibleColumns.add(header);
     }
-    // 1. Save to shared preference immediately on change
-    _saveSelectedColumns();
+    _saveSelectionToPrefs();
     notifyListeners();
   }
 
   void selectAllFeatures() {
     if (_currentCsv != null) {
       _visibleColumns = Set.from(_currentCsv!.headers);
-      _saveSelectedColumns();
+      _saveSelectionToPrefs();
       notifyListeners();
     }
   }
 
   void unselectAllFeatures() {
     _visibleColumns.clear();
-    _saveSelectedColumns();
-    notifyListeners();
-  }
-
-  void _saveSelectedColumns() {
     _saveSelectionToPrefs();
+    notifyListeners();
   }
 
   // --- SETTINGS ---
   void setNormalization(bool value) {
     _isNormalized = value;
+    _prefs?.setBool('is_normalized', value);
     notifyListeners();
   }
 
@@ -337,9 +344,7 @@ class AppState extends ChangeNotifier {
 // -----------------------------------------------------------------------------
 
 void main() async {
-  // Ensure binding for SharedPreferences
   WidgetsFlutterBinding.ensureInitialized();
-
   runApp(
     MultiProvider(
       providers: [ChangeNotifierProvider(create: (_) => AppState())],
@@ -501,10 +506,9 @@ class ExplorerSidebar extends StatelessWidget {
                   backgroundColor: Colors.blue[700],
                   foregroundColor: Colors.white,
                 ),
-                onPressed: () => state.uploadFiles(),
+                onPressed: state.isLoading ? null : () => state.uploadFiles(),
               ),
               const SizedBox(height: 8),
-              // 5. Clear All Button
               if (state.rootItems.isNotEmpty)
                 OutlinedButton.icon(
                   icon: const Icon(Icons.delete_sweep, size: 18),
@@ -514,25 +518,43 @@ class ExplorerSidebar extends StatelessWidget {
                     foregroundColor: Colors.redAccent,
                     side: const BorderSide(color: Colors.redAccent),
                   ),
-                  onPressed: () => state.clearAllFiles(),
+                  onPressed: state.isLoading
+                      ? null
+                      : () => state.clearAllFiles(),
                 ),
             ],
           ),
         ),
         const Divider(color: Colors.grey),
-        Expanded(
-          child: state.rootItems.isEmpty
-              ? const Center(
-                  child: Text(
-                    "No files uploaded",
-                    style: TextStyle(color: Colors.grey),
+
+        // 1. Progress Indicator
+        if (state.isLoading)
+          const Expanded(
+            child: Center(
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  CircularProgressIndicator(),
+                  SizedBox(height: 16),
+                  Text("Processing...", style: TextStyle(color: Colors.grey)),
+                ],
+              ),
+            ),
+          )
+        else
+          Expanded(
+            child: state.rootItems.isEmpty
+                ? const Center(
+                    child: Text(
+                      "No files uploaded",
+                      style: TextStyle(color: Colors.grey),
+                    ),
+                  )
+                : ListView.builder(
+                    itemCount: state.rootItems.length,
+                    itemBuilder: (ctx, i) => FileNode(item: state.rootItems[i]),
                   ),
-                )
-              : ListView.builder(
-                  itemCount: state.rootItems.length,
-                  itemBuilder: (ctx, i) => FileNode(item: state.rootItems[i]),
-                ),
-        ),
+          ),
       ],
     );
   }
@@ -556,7 +578,6 @@ class FileNode extends StatelessWidget {
           overflow: TextOverflow.ellipsis,
         ),
         childrenPadding: const EdgeInsets.only(left: 10),
-        // 6. Option to remove folder (zip root)
         trailing: IconButton(
           icon: const Icon(Icons.delete_outline, size: 16, color: Colors.grey),
           onPressed: () => state.removeFile(item),
@@ -581,7 +602,6 @@ class FileNode extends StatelessWidget {
             overflow: TextOverflow.ellipsis,
           ),
           dense: true,
-          // 6. Option to remove file
           trailing: IconButton(
             icon: const Icon(
               Icons.delete_outline,
@@ -977,6 +997,8 @@ class ChartArea extends StatelessWidget {
           yValueMapper: (ChartDataPoint data, _) => data.y,
           color: palette[colorIndex % palette.length],
           width: 1.5,
+          // 2. Disable Animation
+          animationDuration: 0,
           markerSettings: MarkerSettings(
             isVisible: state.showMarkers,
             width: state.markerSize,
