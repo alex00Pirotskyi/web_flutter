@@ -1,8 +1,7 @@
 import 'dart:convert';
 import 'dart:math';
 import 'dart:typed_data';
-// Conditional import for web downloading
-import 'dart:html' as html;
+import 'dart:html' as html; // Only works on Flutter Web
 
 import 'package:archive/archive.dart';
 import 'package:csv/csv.dart';
@@ -25,8 +24,6 @@ class FileSystemItem {
   Uint8List? content;
   String? path;
   bool isExpanded;
-
-  // 1. Tag Logic: Status field
   FileStatus status;
 
   FileSystemItem({
@@ -56,20 +53,12 @@ class AppState extends ChangeNotifier {
   SharedPreferences? _prefs;
   bool _isLoading = false;
 
-  // Navigation
   int _selectedIndex = 0;
-
-  // File System
   List<FileSystemItem> _rootItems = [];
   FileSystemItem? _selectedFileItem;
-
-  // Data
   CsvDataSet? _currentCsv;
-
-  // Features
   Set<String> _visibleColumns = {};
 
-  // Settings
   bool _isNormalized = false;
   bool _showTooltip = true;
   bool _showMarkers = false;
@@ -77,7 +66,6 @@ class AppState extends ChangeNotifier {
   double _plotHeight = 600.0;
   bool _isLegendExpanded = true;
 
-  // Getters
   bool get isLoading => _isLoading;
   int get selectedIndex => _selectedIndex;
   List<FileSystemItem> get rootItems => _rootItems;
@@ -101,8 +89,6 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
-  // --- ACTIONS ---
-
   void setNavIndex(int index) {
     _selectedIndex = index;
     notifyListeners();
@@ -117,36 +103,26 @@ class AppState extends ChangeNotifier {
     item.isExpanded = expanded;
   }
 
-  // --- TAGGING LOGIC (New) ---
-
   void setFileStatus(FileSystemItem item, FileStatus status) {
     item.status = status;
     notifyListeners();
   }
 
-  // 2. Download Tag Info (YAML)
   void downloadTagInfo() {
     StringBuffer yamlContent = StringBuffer();
-
-    // Recursive function to collect all files
     void traverse(List<FileSystemItem> items) {
       for (var item in items) {
         if (!item.isFolder) {
           String statusStr = "UNMARKED";
           if (item.status == FileStatus.pass) statusStr = "PASS";
           if (item.status == FileStatus.fail) statusStr = "FAIL";
-
           yamlContent.writeln("${item.name}: $statusStr");
         }
-        if (item.children.isNotEmpty) {
-          traverse(item.children);
-        }
+        if (item.children.isNotEmpty) traverse(item.children);
       }
     }
 
     traverse(_rootItems);
-
-    // Trigger Browser Download
     final bytes = utf8.encode(yamlContent.toString());
     final blob = html.Blob([bytes]);
     final url = html.Url.createObjectUrlFromBlob(blob);
@@ -156,7 +132,6 @@ class AppState extends ChangeNotifier {
     html.Url.revokeObjectUrl(url);
   }
 
-  // 3. Upload Tag Info (Sync)
   Future<void> uploadTagInfo() async {
     try {
       FilePickerResult? result = await FilePicker.platform.pickFiles(
@@ -164,7 +139,6 @@ class AppState extends ChangeNotifier {
         allowedExtensions: ['yaml', 'yml', 'txt'],
         withData: true,
       );
-
       if (result != null && result.files.isNotEmpty) {
         String content = utf8.decode(result.files.first.bytes!);
         _syncTags(content);
@@ -175,15 +149,12 @@ class AppState extends ChangeNotifier {
   }
 
   void _syncTags(String yamlContent) {
-    // Simple Line Parser for YAML (name: status)
     Map<String, FileStatus> tagMap = {};
-
     LineSplitter.split(yamlContent).forEach((line) {
       if (line.contains(":")) {
         var parts = line.split(":");
         String key = parts[0].trim();
         String val = parts.sublist(1).join(":").trim().toUpperCase();
-
         if (val == "PASS")
           tagMap[key] = FileStatus.pass;
         else if (val == "FAIL")
@@ -192,16 +163,12 @@ class AppState extends ChangeNotifier {
           tagMap[key] = FileStatus.unmarked;
       }
     });
-
-    // Recursive update
     void updateItems(List<FileSystemItem> items) {
       for (var item in items) {
         if (!item.isFolder && tagMap.containsKey(item.name)) {
           item.status = tagMap[item.name]!;
         }
-        if (item.children.isNotEmpty) {
-          updateItems(item.children);
-        }
+        if (item.children.isNotEmpty) updateItems(item.children);
       }
     }
 
@@ -209,12 +176,9 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
-  // --- FILE MANAGEMENT ---
-
   Future<void> uploadFiles() async {
     _isLoading = true;
     notifyListeners();
-
     try {
       FilePickerResult? result = await FilePicker.platform.pickFiles(
         allowMultiple: true,
@@ -222,7 +186,6 @@ class AppState extends ChangeNotifier {
         allowedExtensions: ['csv', 'zip'],
         withData: true,
       );
-
       if (result != null) {
         for (var file in result.files) {
           if (file.extension == 'zip') {
@@ -242,14 +205,12 @@ class AppState extends ChangeNotifier {
 
   Future<void> _handleZip(Uint8List bytes, String zipName) async {
     final archive = ZipDecoder().decodeBytes(bytes);
-
     FileSystemItem zipRoot = FileSystemItem(
       name: zipName,
       isFolder: true,
       children: [],
       isExpanded: true,
     );
-
     for (final file in archive) {
       if (file.isFile && file.name.endsWith(".csv")) {
         final content = file.content as List<int>;
@@ -288,7 +249,6 @@ class AppState extends ChangeNotifier {
         _removeFromChildren(root, itemToRemove);
       }
     }
-
     if (_selectedFileItem == itemToRemove) {
       _currentCsv = null;
       _selectedFileItem = null;
@@ -309,18 +269,17 @@ class AppState extends ChangeNotifier {
     return false;
   }
 
-  // --- SELECTION & PARSING ---
-
+  // --- SELECTION OPTIMIZED (INSTANT) ---
   Future<void> selectFile(FileSystemItem item) async {
     if (item.isFolder || item.content == null) return;
 
-    _isLoading = true;
+    // 1. Instant UI update: Select the file immediately
+    _selectedFileItem = item;
     notifyListeners();
-    await Future.delayed(const Duration(milliseconds: 50));
 
+    // 2. Parse data synchronously (for immediate feel) or async
+    // Removing the artificial delay here
     try {
-      _selectedFileItem = item;
-
       String csvString = utf8.decode(item.content!);
       List<List<dynamic>> rows = const CsvToListConverter(
         eol: '\n',
@@ -331,7 +290,6 @@ class AppState extends ChangeNotifier {
             .map((e) => e.toString().trim())
             .toList();
         Map<String, List<double>> parsedData = {};
-
         for (var h in headers) parsedData[h] = [];
 
         for (int i = 1; i < rows.length; i++) {
@@ -350,12 +308,9 @@ class AppState extends ChangeNotifier {
         Set<String> candidateSelection = _visibleColumns.isNotEmpty
             ? _visibleColumns
             : savedSelection;
-
         Set<String> validSelection = {};
         for (String col in candidateSelection) {
-          if (headers.contains(col)) {
-            validSelection.add(col);
-          }
+          if (headers.contains(col)) validSelection.add(col);
         }
 
         _visibleColumns = validSelection;
@@ -363,10 +318,9 @@ class AppState extends ChangeNotifier {
       }
     } catch (e) {
       debugPrint("Error parsing: $e");
-    } finally {
-      _isLoading = false;
-      notifyListeners();
     }
+    // 3. Final UI update for Chart
+    notifyListeners();
   }
 
   void toggleColumnVisibility(String header) {
@@ -590,7 +544,6 @@ class ExplorerSidebar extends StatelessWidget {
           padding: const EdgeInsets.all(8.0),
           child: Column(
             children: [
-              // 3. Upload Tag Info Button
               OutlinedButton.icon(
                 icon: const Icon(Icons.upload, size: 18),
                 label: const Text("Upload Tag Info"),
@@ -602,8 +555,6 @@ class ExplorerSidebar extends StatelessWidget {
                 onPressed: state.isLoading ? null : () => state.uploadTagInfo(),
               ),
               const SizedBox(height: 8),
-
-              // 2. Download Tag Info Button
               OutlinedButton.icon(
                 icon: const Icon(Icons.download, size: 18),
                 label: const Text("Download Tag Info"),
@@ -617,7 +568,6 @@ class ExplorerSidebar extends StatelessWidget {
                     : () => state.downloadTagInfo(),
               ),
               const SizedBox(height: 16),
-
               ElevatedButton.icon(
                 icon: const Icon(Icons.upload_file),
                 label: const Text("Upload Files/Zip"),
@@ -629,7 +579,6 @@ class ExplorerSidebar extends StatelessWidget {
                 onPressed: state.isLoading ? null : () => state.uploadFiles(),
               ),
               const SizedBox(height: 8),
-
               if (state.rootItems.isNotEmpty)
                 OutlinedButton.icon(
                   icon: const Icon(Icons.delete_sweep, size: 18),
@@ -689,7 +638,6 @@ class FileNode extends StatefulWidget {
 }
 
 class _FileNodeState extends State<FileNode> {
-  // 4. Auto-Scroll Logic: Hook into the build process
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
@@ -705,14 +653,13 @@ class _FileNodeState extends State<FileNode> {
   void _checkScroll() {
     final state = context.read<AppState>();
     if (state.selectedFileItem == widget.item) {
-      // If this file is selected, try to scroll to it
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted) {
           Scrollable.ensureVisible(
             context,
-            alignment: 0.5, // Center in list
-            duration: const Duration(milliseconds: 300),
-            curve: Curves.easeInOut,
+            alignment: 0.5,
+            // CHANGED: Zero duration for instant jump
+            duration: Duration.zero,
           );
         }
       });
@@ -725,7 +672,6 @@ class _FileNodeState extends State<FileNode> {
     final item = widget.item;
     bool isSelected = state.selectedFileItem == item;
 
-    // 1. Tag Logic: Determine Text Color
     Color textColor = Colors.white70;
     if (isSelected) textColor = Colors.white;
     if (item.status == FileStatus.pass) textColor = Colors.greenAccent;
@@ -766,13 +712,11 @@ class _FileNodeState extends State<FileNode> {
             overflow: TextOverflow.ellipsis,
           ),
           dense: true,
-          // 1. Tag Logic: Buttons Row
           trailing: SizedBox(
-            width: 96, // Width for 3 buttons
+            width: 96,
             child: Row(
               mainAxisAlignment: MainAxisAlignment.end,
               children: [
-                // Pass Button (Green)
                 InkWell(
                   onTap: () => state.setFileStatus(item, FileStatus.pass),
                   child: const Padding(
@@ -784,7 +728,6 @@ class _FileNodeState extends State<FileNode> {
                     ),
                   ),
                 ),
-                // Fail Button (Red)
                 InkWell(
                   onTap: () => state.setFileStatus(item, FileStatus.fail),
                   child: const Padding(
@@ -796,7 +739,6 @@ class _FileNodeState extends State<FileNode> {
                     ),
                   ),
                 ),
-                // Delete Button
                 InkWell(
                   onTap: () => state.removeFile(item),
                   child: const Padding(
