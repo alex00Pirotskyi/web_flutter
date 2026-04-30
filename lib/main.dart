@@ -189,15 +189,19 @@ class AppState extends ChangeNotifier {
 
       for (var key in doc.keys) {
         var val = doc[key];
+
         if (val is YamlMap) {
+          // --- NEW FORMAT (Nested Map) ---
           String statusStr =
               val['status']?.toString().toUpperCase() ?? 'UNMARKED';
-          if (statusStr == 'PASS')
+
+          if (statusStr == 'PASS') {
             tagMap[key] = FileStatus.pass;
-          else if (statusStr == 'FAIL')
+          } else if (statusStr == 'FAIL') {
             tagMap[key] = FileStatus.fail;
-          else
+          } else {
             tagMap[key] = FileStatus.unmarked;
+          }
 
           var ranges = val['invalid_ranges'];
           if (ranges is YamlList) {
@@ -209,6 +213,18 @@ class AppState extends ChangeNotifier {
             }
             rangesMap[key] = parsedRanges;
           }
+        } else {
+          // --- OLD FORMAT (Backward Compatibility) ---
+          // Here 'val' is just a String like "PASS" or "FAIL"
+          String statusStr = val?.toString().trim().toUpperCase() ?? 'UNMARKED';
+
+          if (statusStr == 'PASS') {
+            tagMap[key] = FileStatus.pass;
+          } else if (statusStr == 'FAIL') {
+            tagMap[key] = FileStatus.fail;
+          } else {
+            tagMap[key] = FileStatus.unmarked;
+          }
         }
       }
 
@@ -216,8 +232,9 @@ class AppState extends ChangeNotifier {
         for (var item in items) {
           if (!item.isFolder) {
             if (tagMap.containsKey(item.name)) item.status = tagMap[item.name]!;
-            if (rangesMap.containsKey(item.name))
+            if (rangesMap.containsKey(item.name)) {
               item.invalidRanges = rangesMap[item.name]!;
+            }
           }
           if (item.children.isNotEmpty) updateItems(item.children);
         }
