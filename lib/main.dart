@@ -10,6 +10,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:syncfusion_flutter_charts/charts.dart';
+import 'package:yaml/yaml.dart'; // REQUIRED: Add 'yaml: ^3.1.2' to pubspec.yaml
 
 // -----------------------------------------------------------------------------
 // 1. DATA MODELS
@@ -25,6 +26,7 @@ class FileSystemItem {
   String? path;
   bool isExpanded;
   FileStatus status;
+  List<List<int>> invalidRanges; // NEW: Stores invalid data chunks
 
   FileSystemItem({
     required this.name,
@@ -34,7 +36,8 @@ class FileSystemItem {
     this.path,
     this.isExpanded = false,
     this.status = FileStatus.unmarked,
-  });
+    List<List<int>>? invalidRanges,
+  }) : invalidRanges = invalidRanges ?? [];
 }
 
 class CsvDataSet {
@@ -108,6 +111,24 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
+  // --- NEW: Range Management Methods ---
+  void addInvalidRange(int start, int end) {
+    if (_selectedFileItem != null) {
+      _selectedFileItem!.invalidRanges.add([start, end]);
+      notifyListeners();
+    }
+  }
+
+  void removeInvalidRange(int index) {
+    if (_selectedFileItem != null &&
+        index >= 0 &&
+        index < _selectedFileItem!.invalidRanges.length) {
+      _selectedFileItem!.invalidRanges.removeAt(index);
+      notifyListeners();
+    }
+  }
+
+  // --- UPDATED: YAML Export ---
   void downloadTagInfo() {
     StringBuffer yamlContent = StringBuffer();
     void traverse(List<FileSystemItem> items) {
@@ -116,7 +137,16 @@ class AppState extends ChangeNotifier {
           String statusStr = "UNMARKED";
           if (item.status == FileStatus.pass) statusStr = "PASS";
           if (item.status == FileStatus.fail) statusStr = "FAIL";
-          yamlContent.writeln("${item.name}: $statusStr");
+
+          yamlContent.writeln("${item.name}:");
+          yamlContent.writeln("  status: $statusStr");
+
+          if (item.invalidRanges.isNotEmpty) {
+            yamlContent.writeln("  invalid_ranges:");
+            for (var range in item.invalidRanges) {
+              yamlContent.writeln("    - [${range[0]}, ${range[1]}]");
+            }
+          }
         }
         if (item.children.isNotEmpty) traverse(item.children);
       }
@@ -132,6 +162,7 @@ class AppState extends ChangeNotifier {
     html.Url.revokeObjectUrl(url);
   }
 
+  // --- UPDATED: YAML Import ---
   Future<void> uploadTagInfo() async {
     try {
       FilePickerResult? result = await FilePicker.platform.pickFiles(
@@ -149,31 +180,54 @@ class AppState extends ChangeNotifier {
   }
 
   void _syncTags(String yamlContent) {
-    Map<String, FileStatus> tagMap = {};
-    LineSplitter.split(yamlContent).forEach((line) {
-      if (line.contains(":")) {
-        var parts = line.split(":");
-        String key = parts[0].trim();
-        String val = parts.sublist(1).join(":").trim().toUpperCase();
-        if (val == "PASS")
-          tagMap[key] = FileStatus.pass;
-        else if (val == "FAIL")
-          tagMap[key] = FileStatus.fail;
-        else
-          tagMap[key] = FileStatus.unmarked;
-      }
-    });
-    void updateItems(List<FileSystemItem> items) {
-      for (var item in items) {
-        if (!item.isFolder && tagMap.containsKey(item.name)) {
-          item.status = tagMap[item.name]!;
-        }
-        if (item.children.isNotEmpty) updateItems(item.children);
-      }
-    }
+    try {
+      final doc = loadYaml(yamlContent);
+      if (doc is! YamlMap) return;
 
-    updateItems(_rootItems);
-    notifyListeners();
+      Map<String, FileStatus> tagMap = {};
+      Map<String, List<List<int>>> rangesMap = {};
+
+      for (var key in doc.keys) {
+        var val = doc[key];
+        if (val is YamlMap) {
+          String statusStr =
+              val['status']?.toString().toUpperCase() ?? 'UNMARKED';
+          if (statusStr == 'PASS')
+            tagMap[key] = FileStatus.pass;
+          else if (statusStr == 'FAIL')
+            tagMap[key] = FileStatus.fail;
+          else
+            tagMap[key] = FileStatus.unmarked;
+
+          var ranges = val['invalid_ranges'];
+          if (ranges is YamlList) {
+            List<List<int>> parsedRanges = [];
+            for (var r in ranges) {
+              if (r is YamlList && r.length == 2) {
+                parsedRanges.add([r[0] as int, r[1] as int]);
+              }
+            }
+            rangesMap[key] = parsedRanges;
+          }
+        }
+      }
+
+      void updateItems(List<FileSystemItem> items) {
+        for (var item in items) {
+          if (!item.isFolder) {
+            if (tagMap.containsKey(item.name)) item.status = tagMap[item.name]!;
+            if (rangesMap.containsKey(item.name))
+              item.invalidRanges = rangesMap[item.name]!;
+          }
+          if (item.children.isNotEmpty) updateItems(item.children);
+        }
+      }
+
+      updateItems(_rootItems);
+      notifyListeners();
+    } catch (e) {
+      debugPrint("Error parsing YAML: $e");
+    }
   }
 
   Future<void> uploadFiles() async {
@@ -205,26 +259,18 @@ class AppState extends ChangeNotifier {
 
   Future<void> _handleZip(Uint8List bytes, String zipName) async {
     final archive = ZipDecoder().decodeBytes(bytes);
-    FileSystemItem zipRoot = FileSystemItem(
-      name: zipName,
-      isFolder: true,
-      children: [],
-      isExpanded: true,
-    );
+
     for (final file in archive) {
-      if (file.isFile && file.name.endsWith(".csv")) {
+      if (file.name.contains('__MACOSX') ||
+          file.name.split('/').last.startsWith('._'))
+        continue;
+
+      if (file.isFile && file.name.toLowerCase().endsWith(".csv")) {
         final content = file.content as List<int>;
-        zipRoot.children.add(
-          FileSystemItem(
-            name: file.name,
-            isFolder: false,
-            content: Uint8List.fromList(content),
-            path: "$zipName/${file.name}",
-          ),
-        );
+        final fileName = file.name.split('/').last;
+        _addFileToRoot(fileName, Uint8List.fromList(content));
       }
     }
-    _rootItems.add(zipRoot);
   }
 
   void _addFileToRoot(String name, Uint8List bytes) {
@@ -269,16 +315,12 @@ class AppState extends ChangeNotifier {
     return false;
   }
 
-  // --- SELECTION OPTIMIZED (INSTANT) ---
   Future<void> selectFile(FileSystemItem item) async {
     if (item.isFolder || item.content == null) return;
 
-    // 1. Instant UI update: Select the file immediately
     _selectedFileItem = item;
     notifyListeners();
 
-    // 2. Parse data synchronously (for immediate feel) or async
-    // Removing the artificial delay here
     try {
       String csvString = utf8.decode(item.content!);
       List<List<dynamic>> rows = const CsvToListConverter(
@@ -319,7 +361,6 @@ class AppState extends ChangeNotifier {
     } catch (e) {
       debugPrint("Error parsing: $e");
     }
-    // 3. Final UI update for Chart
     notifyListeners();
   }
 
@@ -461,7 +502,6 @@ class MainLayout extends StatelessWidget {
               ),
             ],
           ),
-
           Container(
             width: 300,
             color: const Color(0xFF252526),
@@ -485,7 +525,6 @@ class MainLayout extends StatelessWidget {
               ],
             ),
           ),
-
           Expanded(
             child: Container(
               color: const Color(0xFF1E1E1E),
@@ -504,7 +543,7 @@ class MainLayout extends StatelessWidget {
       case 1:
         return "VISIBLE FEATURES";
       case 2:
-        return "NORMALIZATION";
+        return "DATA PROCESSING"; // Renamed from Normalization
       case 3:
         return "SETTINGS";
       default:
@@ -519,7 +558,7 @@ class MainLayout extends StatelessWidget {
       case 1:
         return const FeatureSelectorSidebar();
       case 2:
-        return const NormalizationSidebar();
+        return const ProcessSidebar(); // NEW sidebar component
       case 3:
         return const SettingsSidebar();
       default:
@@ -596,7 +635,6 @@ class ExplorerSidebar extends StatelessWidget {
           ),
         ),
         const Divider(color: Colors.grey),
-
         if (state.isLoading)
           const Expanded(
             child: Center(
@@ -658,7 +696,6 @@ class _FileNodeState extends State<FileNode> {
           Scrollable.ensureVisible(
             context,
             alignment: 0.5,
-            // CHANGED: Zero duration for instant jump
             duration: Duration.zero,
           );
         }
@@ -838,30 +875,162 @@ class FeatureSelectorSidebar extends StatelessWidget {
   }
 }
 
-class NormalizationSidebar extends StatelessWidget {
-  const NormalizationSidebar({super.key});
+// --- NEW: Replaces NormalizationSidebar with a more robust processing tab ---
+class ProcessSidebar extends StatefulWidget {
+  const ProcessSidebar({super.key});
+
+  @override
+  State<ProcessSidebar> createState() => _ProcessSidebarState();
+}
+
+class _ProcessSidebarState extends State<ProcessSidebar> {
+  final TextEditingController _startCtrl = TextEditingController();
+  final TextEditingController _endCtrl = TextEditingController();
+
+  @override
+  void dispose() {
+    _startCtrl.dispose();
+    _endCtrl.dispose();
+    super.dispose();
+  }
+
+  void _addRange(AppState state) {
+    final start = int.tryParse(_startCtrl.text);
+    final end = int.tryParse(_endCtrl.text);
+    if (start != null && end != null && start <= end) {
+      state.addInvalidRange(start, end);
+      _startCtrl.clear();
+      _endCtrl.clear();
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
     final state = context.watch<AppState>();
-    return Padding(
+
+    return ListView(
       padding: const EdgeInsets.all(16.0),
-      child: Column(
-        children: [
+      children: [
+        // 1. Normalization (Kept from old layout)
+        const Text(
+          "NORMALIZATION",
+          style: TextStyle(
+            fontWeight: FontWeight.bold,
+            color: Colors.blueAccent,
+          ),
+        ),
+        const SizedBox(height: 8),
+        SwitchListTile(
+          contentPadding: EdgeInsets.zero,
+          title: const Text(
+            "Normalize [-1.0, 1.0]",
+            style: TextStyle(fontSize: 13),
+          ),
+          value: state.isNormalized,
+          activeColor: Colors.green,
+          onChanged: (val) => state.setNormalization(val),
+        ),
+        const Divider(height: 30),
+
+        // 2. Data Validation Tagging
+        const Text(
+          "FLAG INVALID DATA RANGES",
+          style: TextStyle(
+            fontWeight: FontWeight.bold,
+            color: Colors.redAccent,
+          ),
+        ),
+        const SizedBox(height: 8),
+        if (state.selectedFileItem == null)
           const Text(
-            "Normalize data to range [-1.0, 1.0]",
+            "Please select a file from the explorer to flag data.",
             style: TextStyle(color: Colors.grey, fontSize: 12),
+          )
+        else ...[
+          Row(
+            children: [
+              Expanded(
+                child: TextField(
+                  controller: _startCtrl,
+                  decoration: const InputDecoration(
+                    labelText: 'Start Index',
+                    isDense: true,
+                  ),
+                  keyboardType: TextInputType.number,
+                  style: const TextStyle(fontSize: 13),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: TextField(
+                  controller: _endCtrl,
+                  decoration: const InputDecoration(
+                    labelText: 'End Index',
+                    isDense: true,
+                  ),
+                  keyboardType: TextInputType.number,
+                  style: const TextStyle(fontSize: 13),
+                ),
+              ),
+            ],
           ),
-          const SizedBox(height: 20),
-          SwitchListTile(
-            title: const Text("Enable Normalization"),
-            subtitle: Text(state.isNormalized ? "Active" : "Inactive"),
-            value: state.isNormalized,
-            activeColor: Colors.green,
-            onChanged: (val) => state.setNormalization(val),
+          const SizedBox(height: 12),
+          ElevatedButton.icon(
+            icon: const Icon(Icons.add, size: 16),
+            label: const Text("Add Range"),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.red[900],
+              foregroundColor: Colors.white,
+              minimumSize: const Size(double.infinity, 35),
+            ),
+            onPressed: () => _addRange(state),
           ),
+          const SizedBox(height: 16),
+          const Text(
+            "Current Invalid Ranges:",
+            style: TextStyle(fontSize: 12, color: Colors.grey),
+          ),
+          const SizedBox(height: 8),
+          if (state.selectedFileItem!.invalidRanges.isEmpty)
+            const Text(
+              "None",
+              style: TextStyle(fontSize: 12, fontStyle: FontStyle.italic),
+            )
+          else
+            ...state.selectedFileItem!.invalidRanges.asMap().entries.map((
+              entry,
+            ) {
+              int idx = entry.key;
+              List<int> range = entry.value;
+              return Container(
+                margin: const EdgeInsets.only(bottom: 6),
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                decoration: BoxDecoration(
+                  color: Colors.red.withOpacity(0.1),
+                  border: Border.all(color: Colors.redAccent.withOpacity(0.3)),
+                  borderRadius: BorderRadius.circular(4),
+                ),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text(
+                      "[ ${range[0]} to ${range[1]} ]",
+                      style: const TextStyle(fontSize: 13),
+                    ),
+                    InkWell(
+                      onTap: () => state.removeInvalidRange(idx),
+                      child: const Icon(
+                        Icons.close,
+                        size: 16,
+                        color: Colors.redAccent,
+                      ),
+                    ),
+                  ],
+                ),
+              );
+            }).toList(),
         ],
-      ),
+      ],
     );
   }
 }
@@ -971,6 +1140,20 @@ class ChartArea extends StatelessWidget {
       Colors.indigoAccent,
     ];
 
+    // --- NEW: Generate Syncfusion PlotBands based on invalid ranges ---
+    List<PlotBand> invalidPlotBands =
+        state.selectedFileItem?.invalidRanges.map((range) {
+          return PlotBand(
+            isVisible: true,
+            start: range[0],
+            end: range[1],
+            color: Colors.red.withOpacity(0.2), // Shades the background red
+            borderColor: Colors.red,
+            borderWidth: 1,
+          );
+        }).toList() ??
+        [];
+
     return ListView(
       padding: const EdgeInsets.all(20),
       children: [
@@ -1020,9 +1203,31 @@ class ChartArea extends StatelessWidget {
                     },
                   )
                 : null,
-            primaryXAxis: const NumericAxis(
-              title: AxisTitle(text: 'Index'),
-              majorGridLines: MajorGridLines(width: 0.5, color: Colors.white10),
+            primaryXAxis: NumericAxis(
+              title: const AxisTitle(text: 'Index'),
+              majorGridLines: const MajorGridLines(
+                width: 0.5,
+                color: Colors.white10,
+              ),
+              plotBands: invalidPlotBands,
+
+              // NEW STRATEGY: Foolproof string manipulation to bypass floating-point bugs
+              axisLabelFormatter: (AxisLabelRenderDetails args) {
+                // 1. Convert the exact value to a string with 1 decimal place (e.g., "40.0" or "40.5")
+                String valStr = args.value.toStringAsFixed(1);
+
+                // 2. Check if it is a perfect whole number
+                if (valStr.endsWith('.0')) {
+                  // It's a real CSV index! Cast to int to remove the decimal and show it.
+                  return ChartAxisLabel(
+                    args.value.toInt().toString(),
+                    args.textStyle,
+                  );
+                }
+
+                // 3. It's a fractional interval generated by deep zooming. Hide it.
+                return ChartAxisLabel('', args.textStyle);
+              },
             ),
             primaryYAxis: NumericAxis(
               title: AxisTitle(text: state.isNormalized ? 'Norm' : 'Raw'),
@@ -1036,10 +1241,8 @@ class ChartArea extends StatelessWidget {
             series: _buildSeries(state, xValues, palette),
           ),
         ),
-
         const SizedBox(height: 10),
         const Divider(),
-
         InkWell(
           onTap: () => state.toggleLegend(),
           borderRadius: BorderRadius.circular(8),
@@ -1062,7 +1265,6 @@ class ChartArea extends StatelessWidget {
             ),
           ),
         ),
-
         if (state.isLegendExpanded)
           GridView.builder(
             shrinkWrap: true,
