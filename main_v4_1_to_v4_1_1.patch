@@ -1,0 +1,35 @@
+--- /mnt/data/v4_1_bundle_work/signal_analysis_v4_1_bundle/lib/main.dart	2026-08-14 07:52:46.000000000 +0000
++++ /mnt/data/main_product_v4_1.dart	2026-08-14 08:19:30.996212138 +0000
+@@ -853,16 +853,29 @@
+   }
+ 
+   Future<void> applyYamlAndDownloadZip() async {
+-    final items = _allLeafItems();
+-    if (items.isEmpty || _isLoading) return;
++    final allItems = _allLeafItems();
++    if (allItems.isEmpty || _isLoading) return;
++
++    // FAIL is a file-level rejection. Rejected datasets must never be included
++    // in the processed output archive. Filter them before any parsing, logical
++    // edits, invalid-range removal, or worker work is started.
++    final failedItemCount =
++        allItems.where((item) => item.status == FileStatus.fail).length;
++    final items = allItems
++        .where((item) => item.status != FileStatus.fail)
++        .toList(growable: false);
+ 
+     _setLoadingState(
+       loading: true,
+-      message: 'Preparing YAML application…',
++      message: failedItemCount == 0
++          ? 'Preparing YAML application…'
++          : 'Preparing YAML application • $failedItemCount FAIL excluded',
+       progress: 0,
+       loadedFileCount: 0,
+     );
+ 
++    // Keep failed entries in the audit manifest so the downloaded package
++    // records why those source datasets are absent from the processed ZIP.
+     final yamlManifest = _buildYamlContent();
+     final sessionId = 'yaml_apply_${DateTime.now().microsecondsSinceEpoch}';
+     final usedPaths = <String>{};

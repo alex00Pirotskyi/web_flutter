@@ -1,0 +1,397 @@
+--- /mnt/data/data_worker.js	2026-08-14 07:41:52.412956489 +0000
++++ /mnt/data/data_worker_v4_1.js	2026-08-14 07:51:02.734541328 +0000
+@@ -1,8 +1,8 @@
+ /*
+- * Signal Analysis Studio - ZIP worker
++ * Signal Analysis Studio - data worker
+  *
+- * Keeps ZIP directory parsing and entry decompression off Flutter Web's UI
+- * event loop. The protocol intentionally uses small positional arrays so it
++ * Keeps ZIP directory parsing, CSV parsing, YAML application and processed
++ * ZIP creation off Flutter Web's UI event loop. The protocol intentionally uses small positional arrays so it
+  * survives structured-clone boundaries without framework-specific objects.
+  *
+  * Requests:
+@@ -17,8 +17,10 @@
+ 'use strict';
+ 
+ const archives = new Map();
++const outputSessions = new Map();
+ const decoderUtf8 = new TextDecoder('utf-8');
+ const decoderLatin1 = new TextDecoder('latin1');
++const encoderUtf8 = new TextEncoder();
+ 
+ self.onmessage = async (event) => {
+   const message = event.data;
+@@ -30,6 +32,7 @@
+   try {
+     if (type === 'clear') {
+       archives.clear();
++      outputSessions.clear();
+       return;
+     }
+ 
+@@ -105,6 +108,61 @@
+       return;
+     }
+ 
++    if (type === 'processCsvToOutput') {
++      const sessionId = String(message[2]);
++      const path = String(message[3]);
++      const payload = message[4];
++      const rules = parseTransformRules(message[5]);
++      const bytes = payload instanceof Uint8Array
++        ? payload
++        : new Uint8Array(payload);
++      const processed = transformCsv(bytes, rules);
++      addOutputFile(sessionId, path, processed);
++      self.postMessage(['outputAdded', requestId, processed.byteLength]);
++      return;
++    }
++
++    if (type === 'processZipEntryToOutput') {
++      const sessionId = String(message[2]);
++      const archiveId = String(message[3]);
++      const entryId = Number(message[4]);
++      const path = String(message[5]);
++      const rules = parseTransformRules(message[6]);
++      const archive = archives.get(archiveId);
++      if (!archive) throw new Error(`ZIP archive ${archiveId} is not loaded.`);
++      const entry = archive.entries.get(entryId);
++      if (!entry) throw new Error(`ZIP entry ${entryId} was not found.`);
++      const bytes = await extractEntry(archive.bytes, entry);
++      const processed = transformCsv(bytes, rules);
++      addOutputFile(sessionId, path, processed);
++      self.postMessage(['outputAdded', requestId, processed.byteLength]);
++      return;
++    }
++
++    if (type === 'addTextToOutput') {
++      const sessionId = String(message[2]);
++      const path = String(message[3]);
++      const text = String(message[4] ?? '');
++      addOutputFile(sessionId, path, encoderUtf8.encode(text));
++      self.postMessage(['outputAdded', requestId, text.length]);
++      return;
++    }
++
++    if (type === 'finalizeOutput') {
++      const sessionId = String(message[2]);
++      const files = outputSessions.get(sessionId) || [];
++      const zip = buildStoredZip(files);
++      outputSessions.delete(sessionId);
++      self.postMessage(['outputZip', requestId, zip], [zip.buffer]);
++      return;
++    }
++
++    if (type === 'discardOutput') {
++      outputSessions.delete(String(message[2]));
++      self.postMessage(['outputDiscarded', requestId]);
++      return;
++    }
++
+     throw new Error(`Unsupported worker request: ${String(type)}`);
+   } catch (error) {
+     const messageText = error && error.message ? error.message : String(error);
+@@ -162,6 +220,8 @@
+     headers: parsed.headers,
+     logicalHeaders: parsed.logicalHeaders,
+     normalizationScales: parsed.normalizationScales,
++    minimumValues: parsed.minimumValues,
++    maximumValues: parsed.maximumValues,
+     rowCount: parsed.rowCount,
+   };
+   const transfer = parsed.columns.map((column) => column.buffer);
+@@ -178,6 +238,8 @@
+       headers: [],
+       logicalHeaders: [],
+       normalizationScales: [],
++      minimumValues: [],
++      maximumValues: [],
+       rowCount: 0,
+       columns: [],
+     };
+@@ -188,6 +250,8 @@
+   let logical = null;
+   let logicalSeen = null;
+   let maxAbs = null;
++  let minimumValues = null;
++  let maximumValues = null;
+   let rowCount = 0;
+ 
+   const row = [];
+@@ -207,6 +271,8 @@
+       logical = headers.map(() => true);
+       logicalSeen = headers.map(() => false);
+       maxAbs = headers.map(() => 0);
++      minimumValues = headers.map(() => Number.POSITIVE_INFINITY);
++      maximumValues = headers.map(() => Number.NEGATIVE_INFINITY);
+       row.length = 0;
+       return;
+     }
+@@ -220,11 +286,15 @@
+       const parsed = j < row.length ? parseCsvCell(row[j]) : null;
+       if (parsed === null) {
+         columns[j].add(0);
++        minimumValues[j] = Math.min(minimumValues[j], 0);
++        maximumValues[j] = Math.max(maximumValues[j], 0);
+         logical[j] = false;
+         continue;
+       }
+       columns[j].add(parsed);
+       maxAbs[j] = Math.max(maxAbs[j], Math.abs(parsed));
++      minimumValues[j] = Math.min(minimumValues[j], parsed);
++      maximumValues[j] = Math.max(maximumValues[j], parsed);
+       if (parsed === 0 || parsed === 1) {
+         logicalSeen[j] = true;
+       } else {
+@@ -267,6 +337,8 @@
+       headers: [],
+       logicalHeaders: [],
+       normalizationScales: [],
++      minimumValues: [],
++      maximumValues: [],
+       rowCount: 0,
+       columns: [],
+     };
+@@ -281,6 +353,8 @@
+     headers,
+     logicalHeaders,
+     normalizationScales: maxAbs.map((value) => value === 0 ? 1 : value),
++    minimumValues: minimumValues.map((value) => Number.isFinite(value) ? value : 0),
++    maximumValues: maximumValues.map((value) => Number.isFinite(value) ? value : 0),
+     rowCount,
+     columns: columns.map((builder) => builder.finish()),
+   };
+@@ -296,6 +370,231 @@
+   return Number.isFinite(number) ? number : null;
+ }
+ 
++
++function parseTransformRules(raw) {
++  if (!raw) return { logical: {}, invalid: [] };
++  const decoded = typeof raw === 'string' ? JSON.parse(raw) : raw;
++  const logical = decoded && typeof decoded.logical === 'object'
++    ? decoded.logical
++    : {};
++  const invalid = Array.isArray(decoded && decoded.invalid)
++    ? decoded.invalid
++        .filter((range) => Array.isArray(range) && range.length >= 2)
++        .map((range) => [Number(range[0]), Number(range[1])])
++        .filter((range) => Number.isInteger(range[0]) && Number.isInteger(range[1]) && range[0] <= range[1])
++        .sort((a, b) => a[0] - b[0])
++    : [];
++  return { logical, invalid };
++}
++
++function addOutputFile(sessionId, path, bytes) {
++  const files = outputSessions.get(sessionId) || [];
++  files.push({ path, bytes: bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes) });
++  outputSessions.set(sessionId, files);
++}
++
++function transformCsv(bytes, rules) {
++  const logicalKeys = Object.keys(rules.logical || {});
++  const invalid = rules.invalid || [];
++  if (!logicalKeys.length && !invalid.length) return bytes.slice();
++
++  const text = decoderUtf8.decode(bytes);
++  if (!text.length) return bytes.slice();
++
++  let headers = null;
++  const output = [];
++  const row = [];
++  let field = '';
++  let inQuotes = false;
++  let sampleIndex = 0;
++  let invalidCursor = 0;
++  let logicalPlans = null;
++
++  const commitField = () => {
++    row.push(field);
++    field = '';
++  };
++
++  const serializeRow = (cells) => {
++    output.push(cells.map(escapeCsvCell).join(','), '\n');
++  };
++
++  const consumeRow = () => {
++    if (!row.length) return;
++    if (headers === null) {
++      headers = row.map((value) => value.trim());
++      logicalPlans = [];
++      for (const feature of logicalKeys) {
++        const column = headers.indexOf(feature);
++        if (column < 0) continue;
++        const ranges = Array.isArray(rules.logical[feature])
++          ? rules.logical[feature]
++              .filter((entry) => Array.isArray(entry) && entry.length >= 3)
++              .map((entry) => [Number(entry[0]), Number(entry[1]), Number(entry[2])])
++              .filter((entry) => Number.isInteger(entry[0]) && Number.isInteger(entry[1]) &&
++                  entry[0] <= entry[1] && (entry[2] === 0 || entry[2] === 1))
++              .sort((a, b) => a[0] - b[0])
++          : [];
++        if (ranges.length) logicalPlans.push({ column, ranges, cursor: 0 });
++      }
++      serializeRow(row);
++      row.length = 0;
++      return;
++    }
++
++    // Ignore a completely empty trailing line, matching the analyzer parser.
++    if (row.length === 1 && row[0].trim() === '') {
++      row.length = 0;
++      return;
++    }
++
++    // IMPORTANT ORDER: apply logical 0/1 edits using ORIGINAL sample indexes
++    // before deciding whether this original row belongs to an invalid range.
++    for (const plan of logicalPlans) {
++      while (plan.cursor < plan.ranges.length &&
++          plan.ranges[plan.cursor][1] < sampleIndex) {
++        plan.cursor++;
++      }
++      if (plan.cursor < plan.ranges.length) {
++        const range = plan.ranges[plan.cursor];
++        if (sampleIndex >= range[0] && sampleIndex <= range[1]) {
++          while (row.length <= plan.column) row.push('');
++          row[plan.column] = String(range[2]);
++        }
++      }
++    }
++
++    while (invalidCursor < invalid.length && invalid[invalidCursor][1] < sampleIndex) {
++      invalidCursor++;
++    }
++    const remove = invalidCursor < invalid.length &&
++      sampleIndex >= invalid[invalidCursor][0] &&
++      sampleIndex <= invalid[invalidCursor][1];
++
++    if (!remove) serializeRow(row);
++    sampleIndex++;
++    row.length = 0;
++  };
++
++  for (let i = 0; i < text.length; i++) {
++    const ch = text.charCodeAt(i);
++    if (ch === 34) {
++      if (inQuotes && i + 1 < text.length && text.charCodeAt(i + 1) === 34) {
++        field += '"';
++        i++;
++      } else {
++        inQuotes = !inQuotes;
++      }
++    } else if (!inQuotes && ch === 44) {
++      commitField();
++    } else if (!inQuotes && (ch === 10 || ch === 13)) {
++      commitField();
++      consumeRow();
++      if (ch === 13 && i + 1 < text.length && text.charCodeAt(i + 1) === 10) i++;
++    } else {
++      field += text[i];
++    }
++  }
++  if (field.length || row.length) {
++    commitField();
++    consumeRow();
++  }
++  return encoderUtf8.encode(output.join(''));
++}
++
++function escapeCsvCell(value) {
++  const text = String(value ?? '');
++  if (!/[",\r\n]/.test(text)) return text;
++  return `"${text.replace(/"/g, '""')}"`;
++}
++
++function crc32(bytes) {
++  let crc = 0xffffffff;
++  for (let i = 0; i < bytes.length; i++) {
++    crc ^= bytes[i];
++    for (let bit = 0; bit < 8; bit++) {
++      crc = (crc >>> 1) ^ (0xedb88320 & -(crc & 1));
++    }
++  }
++  return (crc ^ 0xffffffff) >>> 0;
++}
++
++function buildStoredZip(files) {
++  if (files.length > 0xffff) throw new Error('Too many output files for non-ZIP64 export.');
++  const locals = [];
++  const central = [];
++  let offset = 0;
++  const dosTime = 0;
++  const dosDate = 0x21; // 1980-01-01
++
++  for (const file of files) {
++    const nameBytes = encoderUtf8.encode(file.path);
++    const data = file.bytes instanceof Uint8Array ? file.bytes : new Uint8Array(file.bytes);
++    if (data.byteLength > 0xffffffff || offset > 0xffffffff) {
++      throw new Error('Output is too large for non-ZIP64 export.');
++    }
++    const checksum = crc32(data);
++    const local = new Uint8Array(30 + nameBytes.length + data.length);
++    const lv = new DataView(local.buffer);
++    lv.setUint32(0, 0x04034b50, true);
++    lv.setUint16(4, 20, true);
++    lv.setUint16(6, 0x0800, true); // UTF-8 names
++    lv.setUint16(8, 0, true); // stored
++    lv.setUint16(10, dosTime, true);
++    lv.setUint16(12, dosDate, true);
++    lv.setUint32(14, checksum, true);
++    lv.setUint32(18, data.length, true);
++    lv.setUint32(22, data.length, true);
++    lv.setUint16(26, nameBytes.length, true);
++    lv.setUint16(28, 0, true);
++    local.set(nameBytes, 30);
++    local.set(data, 30 + nameBytes.length);
++    locals.push(local);
++
++    const cd = new Uint8Array(46 + nameBytes.length);
++    const cv = new DataView(cd.buffer);
++    cv.setUint32(0, 0x02014b50, true);
++    cv.setUint16(4, 20, true);
++    cv.setUint16(6, 20, true);
++    cv.setUint16(8, 0x0800, true);
++    cv.setUint16(10, 0, true);
++    cv.setUint16(12, dosTime, true);
++    cv.setUint16(14, dosDate, true);
++    cv.setUint32(16, checksum, true);
++    cv.setUint32(20, data.length, true);
++    cv.setUint32(24, data.length, true);
++    cv.setUint16(28, nameBytes.length, true);
++    cv.setUint16(30, 0, true);
++    cv.setUint16(32, 0, true);
++    cv.setUint16(34, 0, true);
++    cv.setUint16(36, 0, true);
++    cv.setUint32(38, 0, true);
++    cv.setUint32(42, offset, true);
++    cd.set(nameBytes, 46);
++    central.push(cd);
++    offset += local.length;
++  }
++
++  const centralOffset = offset;
++  const centralSize = central.reduce((sum, part) => sum + part.length, 0);
++  const totalSize = centralOffset + centralSize + 22;
++  if (totalSize > 0xffffffff) throw new Error('Output ZIP exceeds 4 GiB ZIP32 limit.');
++  const out = new Uint8Array(totalSize);
++  let cursor = 0;
++  for (const part of locals) { out.set(part, cursor); cursor += part.length; }
++  for (const part of central) { out.set(part, cursor); cursor += part.length; }
++  const ev = new DataView(out.buffer, cursor, 22);
++  ev.setUint32(0, 0x06054b50, true);
++  ev.setUint16(4, 0, true);
++  ev.setUint16(6, 0, true);
++  ev.setUint16(8, files.length, true);
++  ev.setUint16(10, files.length, true);
++  ev.setUint32(12, centralSize, true);
++  ev.setUint32(16, centralOffset, true);
++  ev.setUint16(20, 0, true);
++  return out;
++}
++
+ function parseZipDirectory(bytes) {
+   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+   const eocd = findEndOfCentralDirectory(view);
