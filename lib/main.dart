@@ -19,6 +19,8 @@ import 'package:yaml/yaml.dart'; // REQUIRED: Add 'yaml: ^3.1.2' to pubspec.yaml
 
 enum FileStatus { unmarked, pass, fail }
 
+enum FileVisualState { unmarked, cleanPass, editedPass, fail }
+
 // Pantone-inspired workspace palette. Color is used as a restrained
 // navigation/accent system; technical surfaces and typography stay neutral.
 class WorkspaceColors {
@@ -72,6 +74,19 @@ class FileSystemItem {
   FileStatus status;
   List<List<int>> invalidRanges;
   Map<String, List<LogicalFeatureRange>> logicalFeatureRanges;
+
+  bool get hasChanges =>
+      invalidRanges.isNotEmpty ||
+      logicalFeatureRanges.values.any((ranges) => ranges.isNotEmpty);
+
+  FileVisualState get visualState {
+    if (status == FileStatus.fail) return FileVisualState.fail;
+    if (status == FileStatus.pass && hasChanges) {
+      return FileVisualState.editedPass;
+    }
+    if (status == FileStatus.pass) return FileVisualState.cleanPass;
+    return FileVisualState.unmarked;
+  }
 
   FileSystemItem({
     required this.name,
@@ -569,6 +584,12 @@ class AppState extends ChangeNotifier {
   int _explorerRevision = 0;
   int _featureRevision = 0;
 
+  // Lightweight workspace state. These values survive navigation between
+  // sidebars without invalidating chart data or forcing expensive rebuilds.
+  double _explorerScrollOffset = 0.0;
+  String _explorerSearchQuery = '';
+  String? _preferredLogicalFeature;
+
   final _zipWorker = _ZipWorkerClient();
   final Map<String, Uint8List> _zipFallbackBytes = {};
   final Map<String, int> _zipItemCounts = {};
@@ -598,11 +619,22 @@ class AppState extends ChangeNotifier {
   int get dataRevision => _dataRevision;
   int get explorerRevision => _explorerRevision;
   int get featureRevision => _featureRevision;
+  double get explorerScrollOffset => _explorerScrollOffset;
+  String get explorerSearchQuery => _explorerSearchQuery;
+  String? get preferredLogicalFeature => _preferredLogicalFeature;
   int get selectedRowCount => _currentCsv?.rowCount ?? 0;
   List<String> get logicalFeatureHeaders {
     final features = _currentCsv?.logicalHeaders.toList() ?? <String>[];
     features.sort();
     return features;
+  }
+
+  String? get effectiveLogicalFeature {
+    final features = logicalFeatureHeaders;
+    if (features.isEmpty) return null;
+    final preferred = _preferredLogicalFeature;
+    if (preferred != null && features.contains(preferred)) return preferred;
+    return features.first;
   }
 
   AppState() {
@@ -633,7 +665,24 @@ class AppState extends ChangeNotifier {
   Future<void> _initPrefs() async {
     _prefs = await SharedPreferences.getInstance();
     _isNormalized = _prefs?.getBool('is_normalized') ?? false;
+    _preferredLogicalFeature = _prefs?.getString('preferred_logical_feature');
     _notifyChart();
+  }
+
+  void setExplorerScrollOffset(double offset) {
+    if (!offset.isFinite) return;
+    _explorerScrollOffset = max(0.0, offset);
+  }
+
+  void setExplorerSearchQuery(String query) {
+    _explorerSearchQuery = query;
+  }
+
+  void setPreferredLogicalFeature(String feature) {
+    if (feature.isEmpty || _preferredLogicalFeature == feature) return;
+    _preferredLogicalFeature = feature;
+    _prefs?.setString('preferred_logical_feature', feature);
+    _notifyUi();
   }
 
   void setNavIndex(int index) {
@@ -1521,6 +1570,7 @@ class AppState extends ChangeNotifier {
     _currentCsv = null;
     _selectedFileItem = null;
     _visibleColumns.clear();
+    _explorerScrollOffset = 0.0;
     _zipFallbackBytes.clear();
     _zipItemCounts.clear();
     _zipWorker.clear();
@@ -2526,15 +2576,56 @@ class ExplorerSidebar extends StatefulWidget {
 
 class _ExplorerSidebarState extends State<ExplorerSidebar> {
   final TextEditingController _searchCtrl = TextEditingController();
+  late ScrollController _scrollController;
   Timer? _searchDebounce;
   String _query = '';
   int _lastExplorerRevision = -1;
   String _lastFilter = '';
   List<FileSystemItem> _visibleItems = const <FileSystemItem>[];
+  bool _workspaceStateInitialized = false;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (_workspaceStateInitialized) return;
+
+    final state = context.read<AppState>();
+    final savedSearch = state.explorerSearchQuery;
+    _searchCtrl.text = savedSearch;
+    _query = savedSearch.trim().toLowerCase();
+    _scrollController = ScrollController(
+      initialScrollOffset: max(0.0, state.explorerScrollOffset),
+    );
+    _scrollController.addListener(_rememberScrollOffset);
+    _workspaceStateInitialized = true;
+
+    WidgetsBinding.instance.addPostFrameCallback((_) => _clampScrollOffset());
+  }
+
+  void _rememberScrollOffset() {
+    if (!_scrollController.hasClients) return;
+    context.read<AppState>().setExplorerScrollOffset(_scrollController.offset);
+  }
+
+  void _clampScrollOffset() {
+    if (!mounted || !_scrollController.hasClients) return;
+    final position = _scrollController.position;
+    final clamped = _scrollController.offset
+        .clamp(position.minScrollExtent, position.maxScrollExtent)
+        .toDouble();
+    if ((clamped - _scrollController.offset).abs() > 0.5) {
+      _scrollController.jumpTo(clamped);
+    }
+    context.read<AppState>().setExplorerScrollOffset(clamped);
+  }
 
   @override
   void dispose() {
     _searchDebounce?.cancel();
+    if (_workspaceStateInitialized) {
+      _scrollController.removeListener(_rememberScrollOffset);
+      _scrollController.dispose();
+    }
     _searchCtrl.dispose();
     super.dispose();
   }
@@ -2548,10 +2639,14 @@ class _ExplorerSidebarState extends State<ExplorerSidebar> {
   }
 
   void _queueSearch(String value) {
+    // Store the exact text immediately so navigation away during the debounce
+    // window cannot lose what the user typed. Filtering itself stays debounced.
+    context.read<AppState>().setExplorerSearchQuery(value);
     _searchDebounce?.cancel();
     _searchDebounce = Timer(const Duration(milliseconds: 120), () {
       if (!mounted) return;
       setState(() => _query = value.trim().toLowerCase());
+      WidgetsBinding.instance.addPostFrameCallback((_) => _clampScrollOffset());
     });
   }
 
@@ -2670,7 +2765,11 @@ class _ExplorerSidebarState extends State<ExplorerSidebar> {
                           onPressed: () {
                             _searchDebounce?.cancel();
                             _searchCtrl.clear();
+                            context.read<AppState>().setExplorerSearchQuery('');
                             setState(() => _query = '');
+                            WidgetsBinding.instance.addPostFrameCallback(
+                              (_) => _clampScrollOffset(),
+                            );
                           },
                         ),
                 ),
@@ -2752,6 +2851,7 @@ class _ExplorerSidebarState extends State<ExplorerSidebar> {
                       message: 'No dataset matches the current search.',
                     )
                   : ListView.builder(
+                      controller: _scrollController,
                       itemCount: visibleItems.length,
                       itemExtent: 48,
                       cacheExtent: 420,
@@ -2803,6 +2903,7 @@ class FileNode extends StatelessWidget {
     context.select<AppState, int>((state) {
       var stamp = identical(state.selectedFileItem, item) ? 1 : 0;
       stamp |= item.status.index << 1;
+      if (item.hasChanges) stamp |= 1 << 4;
       if (state.isLoading) stamp |= 1 << 5;
       return stamp;
     });
@@ -2825,23 +2926,42 @@ class FileNode extends StatelessWidget {
       );
     }
 
-    final Color statusColor;
-    switch (item.status) {
-      case FileStatus.pass:
+    final visualState = item.visualState;
+    late final Color statusColor;
+    late final Color statusSurface;
+    late final String statusLabel;
+    switch (visualState) {
+      case FileVisualState.cleanPass:
         statusColor = const Color(0xFF79C99E);
+        statusSurface = const Color(0xFF79C99E).withOpacity(0.085);
+        statusLabel = 'PASS';
         break;
-      case FileStatus.fail:
+      case FileVisualState.editedPass:
+        statusColor = const Color(0xFFE8A64B);
+        statusSurface = const Color(0xFFE8A64B).withOpacity(0.11);
+        statusLabel = 'EDITED';
+        break;
+      case FileVisualState.fail:
         statusColor = const Color(0xFFE27D7D);
+        statusSurface = const Color(0xFFE27D7D).withOpacity(0.105);
+        statusLabel = 'FAIL';
         break;
-      case FileStatus.unmarked:
+      case FileVisualState.unmarked:
         statusColor = const Color(0xFF788593);
+        statusSurface = Colors.transparent;
+        statusLabel = 'NEW';
         break;
     }
 
+    final rowColor = isSelected
+        ? Color.alphaBlend(
+            WorkspaceColors.explorer.withOpacity(0.13),
+            statusSurface,
+          )
+        : statusSurface;
+
     return Material(
-      color: isSelected
-          ? WorkspaceColors.explorer.withOpacity(0.11)
-          : Colors.transparent,
+      color: rowColor,
       child: InkWell(
         onTap: state.isLoading ? null : () => state.selectFile(item),
         child: Row(
@@ -2864,23 +2984,37 @@ class FileNode extends StatelessWidget {
               child: Text(
                 item.name,
                 style: TextStyle(
-                  fontSize: 11.25,
+                  fontSize: isSelected ? 13.0 : 11.25,
                   color: isSelected
-                      ? const Color(0xFFF2F5F8)
+                      ? const Color(0xFFF7FAFC)
                       : const Color(0xFFBFC7D0),
-                  fontWeight: isSelected ? FontWeight.w600 : FontWeight.w400,
+                  fontWeight: isSelected ? FontWeight.w700 : FontWeight.w400,
                 ),
                 overflow: TextOverflow.ellipsis,
               ),
             ),
             Tooltip(
-              message: item.status.name.toUpperCase(),
+              message: visualState == FileVisualState.editedPass
+                  ? 'PASS with YAML changes'
+                  : statusLabel,
               child: Container(
-                width: 7,
-                height: 7,
+                constraints: const BoxConstraints(minWidth: 38),
+                margin: const EdgeInsets.only(left: 4, right: 2),
+                padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 3),
                 decoration: BoxDecoration(
-                  color: statusColor,
-                  shape: BoxShape.circle,
+                  color: statusColor.withOpacity(0.12),
+                  border: Border.all(color: statusColor.withOpacity(0.68)),
+                  borderRadius: BorderRadius.circular(5),
+                ),
+                child: Text(
+                  statusLabel,
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    color: statusColor,
+                    fontSize: statusLabel == 'EDITED' ? 8.3 : 8.8,
+                    fontWeight: FontWeight.w800,
+                    letterSpacing: 0.35,
+                  ),
                 ),
               ),
             ),
@@ -3154,7 +3288,6 @@ class LogicalFeatureSidebar extends StatefulWidget {
 class _LogicalFeatureSidebarState extends State<LogicalFeatureSidebar> {
   final TextEditingController _startCtrl = TextEditingController();
   final TextEditingController _endCtrl = TextEditingController();
-  String? _feature;
   int _value = 1;
 
   @override
@@ -3165,7 +3298,7 @@ class _LogicalFeatureSidebarState extends State<LogicalFeatureSidebar> {
   }
 
   void _addEdit(AppState state) {
-    final feature = _feature;
+    final feature = state.effectiveLogicalFeature;
     final start = int.tryParse(_startCtrl.text.trim());
     final end = int.tryParse(_endCtrl.text.trim());
     if (feature == null || start == null || end == null) {
@@ -3208,10 +3341,7 @@ class _LogicalFeatureSidebarState extends State<LogicalFeatureSidebar> {
       );
     }
 
-    if (_feature == null || !features.contains(_feature)) {
-      _feature = features.first;
-    }
-    final currentFeature = _feature!;
+    final currentFeature = state.effectiveLogicalFeature!;
     final ranges = state.logicalRangesFor(currentFeature);
 
     return ListView(
@@ -3245,7 +3375,9 @@ class _LogicalFeatureSidebarState extends State<LogicalFeatureSidebar> {
                 ),
               )
               .toList(),
-          onChanged: (value) => setState(() => _feature = value),
+          onChanged: (value) {
+            if (value != null) state.setPreferredLogicalFeature(value);
+          },
         ),
         const SizedBox(height: 12),
         Row(
