@@ -21,6 +21,8 @@ enum FileStatus { unmarked, pass, fail }
 
 enum FileVisualState { unmarked, cleanPass, editedPass, fail }
 
+enum ExplorerStatusFilter { all, newFiles, pass, failed, edited }
+
 // Pantone-inspired workspace palette. Color is used as a restrained
 // navigation/accent system; technical surfaces and typography stay neutral.
 class WorkspaceColors {
@@ -588,6 +590,7 @@ class AppState extends ChangeNotifier {
   // sidebars without invalidating chart data or forcing expensive rebuilds.
   double _explorerScrollOffset = 0.0;
   String _explorerSearchQuery = '';
+  ExplorerStatusFilter _explorerStatusFilter = ExplorerStatusFilter.all;
   String? _preferredLogicalFeature;
 
   final _zipWorker = _ZipWorkerClient();
@@ -621,6 +624,7 @@ class AppState extends ChangeNotifier {
   int get featureRevision => _featureRevision;
   double get explorerScrollOffset => _explorerScrollOffset;
   String get explorerSearchQuery => _explorerSearchQuery;
+  ExplorerStatusFilter get explorerStatusFilter => _explorerStatusFilter;
   String? get preferredLogicalFeature => _preferredLogicalFeature;
   int get selectedRowCount => _currentCsv?.rowCount ?? 0;
   List<String> get logicalFeatureHeaders {
@@ -676,6 +680,10 @@ class AppState extends ChangeNotifier {
 
   void setExplorerSearchQuery(String query) {
     _explorerSearchQuery = query;
+  }
+
+  void setExplorerStatusFilter(ExplorerStatusFilter filter) {
+    _explorerStatusFilter = filter;
   }
 
   void setPreferredLogicalFeature(String feature) {
@@ -2579,8 +2587,10 @@ class _ExplorerSidebarState extends State<ExplorerSidebar> {
   late ScrollController _scrollController;
   Timer? _searchDebounce;
   String _query = '';
+  ExplorerStatusFilter _statusFilter = ExplorerStatusFilter.all;
   int _lastExplorerRevision = -1;
   String _lastFilter = '';
+  ExplorerStatusFilter? _lastStatusFilter;
   List<FileSystemItem> _visibleItems = const <FileSystemItem>[];
   bool _workspaceStateInitialized = false;
 
@@ -2593,6 +2603,7 @@ class _ExplorerSidebarState extends State<ExplorerSidebar> {
     final savedSearch = state.explorerSearchQuery;
     _searchCtrl.text = savedSearch;
     _query = savedSearch.trim().toLowerCase();
+    _statusFilter = state.explorerStatusFilter;
     _scrollController = ScrollController(
       initialScrollOffset: max(0.0, state.explorerScrollOffset),
     );
@@ -2638,6 +2649,31 @@ class _ExplorerSidebarState extends State<ExplorerSidebar> {
     return item.children.any((child) => _matches(child, query));
   }
 
+  bool _matchesStatus(FileSystemItem item, ExplorerStatusFilter filter) {
+    if (item.isFolder) {
+      return item.children.any((child) => _matchesStatus(child, filter));
+    }
+    switch (filter) {
+      case ExplorerStatusFilter.all:
+        return true;
+      case ExplorerStatusFilter.newFiles:
+        return item.visualState == FileVisualState.unmarked;
+      case ExplorerStatusFilter.pass:
+        return item.visualState == FileVisualState.cleanPass;
+      case ExplorerStatusFilter.failed:
+        return item.visualState == FileVisualState.fail;
+      case ExplorerStatusFilter.edited:
+        return item.visualState == FileVisualState.editedPass;
+    }
+  }
+
+  void _setStatusFilter(ExplorerStatusFilter filter) {
+    if (_statusFilter == filter) return;
+    context.read<AppState>().setExplorerStatusFilter(filter);
+    setState(() => _statusFilter = filter);
+    WidgetsBinding.instance.addPostFrameCallback((_) => _clampScrollOffset());
+  }
+
   void _queueSearch(String value) {
     // Store the exact text immediately so navigation away during the debounce
     // window cannot lose what the user typed. Filtering itself stays debounced.
@@ -2654,12 +2690,23 @@ class _ExplorerSidebarState extends State<ExplorerSidebar> {
     List<FileSystemItem> roots,
     int revision,
   ) {
-    if (_lastExplorerRevision != revision || _lastFilter != _query) {
+    if (_lastExplorerRevision != revision ||
+        _lastFilter != _query ||
+        _lastStatusFilter != _statusFilter) {
       _lastExplorerRevision = revision;
       _lastFilter = _query;
-      _visibleItems = _query.isEmpty
-          ? List<FileSystemItem>.unmodifiable(roots)
-          : roots.where((item) => _matches(item, _query)).toList(growable: false);
+      _lastStatusFilter = _statusFilter;
+      if (_query.isEmpty && _statusFilter == ExplorerStatusFilter.all) {
+        _visibleItems = List<FileSystemItem>.unmodifiable(roots);
+      } else {
+        _visibleItems = roots
+            .where(
+              (item) =>
+                  _matches(item, _query) &&
+                  _matchesStatus(item, _statusFilter),
+            )
+            .toList(growable: false);
+      }
     }
     return _visibleItems;
   }
@@ -2774,13 +2821,62 @@ class _ExplorerSidebarState extends State<ExplorerSidebar> {
                         ),
                 ),
               ),
+              const SizedBox(height: 8),
+              Row(
+                children: [
+                  Expanded(
+                    child: _ExplorerStatusFilterButton(
+                      label: 'All',
+                      accent: WorkspaceColors.explorer,
+                      selected: _statusFilter == ExplorerStatusFilter.all,
+                      onTap: () => _setStatusFilter(ExplorerStatusFilter.all),
+                    ),
+                  ),
+                  const SizedBox(width: 4),
+                  Expanded(
+                    child: _ExplorerStatusFilterButton(
+                      label: 'New',
+                      accent: const Color(0xFF788593),
+                      selected: _statusFilter == ExplorerStatusFilter.newFiles,
+                      onTap: () => _setStatusFilter(ExplorerStatusFilter.newFiles),
+                    ),
+                  ),
+                  const SizedBox(width: 4),
+                  Expanded(
+                    child: _ExplorerStatusFilterButton(
+                      label: 'Pass',
+                      accent: const Color(0xFF79C99E),
+                      selected: _statusFilter == ExplorerStatusFilter.pass,
+                      onTap: () => _setStatusFilter(ExplorerStatusFilter.pass),
+                    ),
+                  ),
+                  const SizedBox(width: 4),
+                  Expanded(
+                    child: _ExplorerStatusFilterButton(
+                      label: 'Failed',
+                      accent: const Color(0xFFE27D7D),
+                      selected: _statusFilter == ExplorerStatusFilter.failed,
+                      onTap: () => _setStatusFilter(ExplorerStatusFilter.failed),
+                    ),
+                  ),
+                  const SizedBox(width: 4),
+                  Expanded(
+                    child: _ExplorerStatusFilterButton(
+                      label: 'Edited',
+                      accent: const Color(0xFFE8A64B),
+                      selected: _statusFilter == ExplorerStatusFilter.edited,
+                      onTap: () => _setStatusFilter(ExplorerStatusFilter.edited),
+                    ),
+                  ),
+                ],
+              ),
               const SizedBox(height: 7),
               Row(
                 children: [
                   Text(
-                    _query.isEmpty
+                    _query.isEmpty && _statusFilter == ExplorerStatusFilter.all
                         ? '${roots.length} datasets'
-                        : '${visibleItems.length} of ${roots.length}',
+                        : '${visibleItems.length} of ${roots.length} datasets',
                     style: const TextStyle(
                       color: Color(0xFF788593),
                       fontSize: 10.5,
@@ -2846,9 +2942,9 @@ class _ExplorerSidebarState extends State<ExplorerSidebar> {
                 )
               : visibleItems.isEmpty
                   ? const _SidebarEmptyState(
-                      icon: Icons.search_off_rounded,
+                      icon: Icons.filter_alt_off_outlined,
                       title: 'No matches',
-                      message: 'No dataset matches the current search.',
+                      message: 'No dataset matches the active search and filter.',
                     )
                   : ListView.builder(
                       controller: _scrollController,
@@ -2859,6 +2955,61 @@ class _ExplorerSidebarState extends State<ExplorerSidebar> {
                     ),
         ),
       ],
+    );
+  }
+}
+
+class _ExplorerStatusFilterButton extends StatelessWidget {
+  final String label;
+  final Color accent;
+  final bool selected;
+  final VoidCallback onTap;
+
+  const _ExplorerStatusFilterButton({
+    required this.label,
+    required this.accent,
+    required this.selected,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Tooltip(
+      message: 'Show $label datasets',
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          onTap: onTap,
+          borderRadius: BorderRadius.circular(6),
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 120),
+            height: 31,
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+              color: selected ? accent.withOpacity(0.15) : const Color(0xFF151B22),
+              borderRadius: BorderRadius.circular(6),
+              border: Border.all(
+                color: selected
+                    ? accent.withOpacity(0.72)
+                    : const Color(0xFF2B3540),
+              ),
+            ),
+            child: Text(
+              label,
+              maxLines: 1,
+              overflow: TextOverflow.fade,
+              softWrap: false,
+              style: TextStyle(
+                color: selected
+                    ? const Color(0xFFF1F4F7)
+                    : const Color(0xFFAEB7C0),
+                fontSize: 10.5,
+                fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
+              ),
+            ),
+          ),
+        ),
+      ),
     );
   }
 }
