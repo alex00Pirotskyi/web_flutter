@@ -13,6 +13,8 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:syncfusion_flutter_charts/charts.dart';
 import 'package:yaml/yaml.dart'; // REQUIRED: Add 'yaml: ^3.1.2' to pubspec.yaml
 
+import 'chart_normalization.dart';
+
 // -----------------------------------------------------------------------------
 // 1. DATA MODELS
 // -----------------------------------------------------------------------------
@@ -598,7 +600,7 @@ class AppState extends ChangeNotifier {
   final Map<String, int> _zipItemCounts = {};
   int _nextZipArchiveId = 1;
 
-  bool _isNormalized = false;
+  ChartNormalization _normalization = ChartNormalization.raw;
   bool _showTooltip = true;
   bool _showMarkers = false;
   double _markerSize = 4.0;
@@ -613,7 +615,8 @@ class AppState extends ChangeNotifier {
   FileSystemItem? get selectedFileItem => _selectedFileItem;
   CsvDataSet? get currentCsv => _currentCsv;
   Set<String> get visibleColumns => _visibleColumns;
-  bool get isNormalized => _isNormalized;
+  ChartNormalization get normalization => _normalization;
+  bool get isNormalized => _normalization == ChartNormalization.perFeature;
   bool get showTooltip => _showTooltip;
   bool get showMarkers => _showMarkers;
   double get markerSize => _markerSize;
@@ -668,7 +671,13 @@ class AppState extends ChangeNotifier {
 
   Future<void> _initPrefs() async {
     _prefs = await SharedPreferences.getInstance();
-    _isNormalized = _prefs?.getBool('is_normalized') ?? false;
+    final savedMode = _prefs?.getString('chart_normalization');
+    _normalization = ChartNormalization.values.firstWhere(
+      (mode) => mode.name == savedMode,
+      orElse: () => (_prefs?.getBool('is_normalized') ?? false)
+          ? ChartNormalization.perFeature
+          : ChartNormalization.raw,
+    );
     _preferredLogicalFeature = _prefs?.getString('preferred_logical_feature');
     _notifyChart();
   }
@@ -1924,9 +1933,11 @@ class AppState extends ChangeNotifier {
     return saved != null ? Set.from(saved) : {};
   }
 
-  void setNormalization(bool value) {
-    _isNormalized = value;
-    _prefs?.setBool('is_normalized', value);
+  void setNormalization(ChartNormalization value) {
+    if (_normalization == value) return;
+    _normalization = value;
+    _prefs?.setString('chart_normalization', value.name);
+    _prefs?.setBool('is_normalized', isNormalized);
     _notifyChart();
   }
 
@@ -3777,21 +3788,41 @@ class _ProcessSidebarState extends State<ProcessSidebar> {
     return ListView(
       padding: const EdgeInsets.all(16.0),
       children: [
-        // 1. Normalization (Kept from old layout)
+        // 1. Display normalization
         const _PanelSectionTitle(
           label: 'NORMALIZATION',
           accent: WorkspaceColors.process,
         ),
         const SizedBox(height: 8),
-        SwitchListTile(
-          contentPadding: EdgeInsets.zero,
-          title: const Text(
-            "Normalize [-1.0, 1.0]",
-            style: TextStyle(fontSize: 13),
-          ),
-          value: state.isNormalized,
-          activeColor: WorkspaceColors.process,
-          onChanged: (val) => state.setNormalization(val),
+        DropdownButtonFormField<ChartNormalization>(
+          initialValue: state.normalization,
+          decoration: const InputDecoration(labelText: 'Chart scale'),
+          isExpanded: true,
+          style: const TextStyle(fontSize: 12, color: Color(0xFFDDE3E9)),
+          items: const [
+            DropdownMenuItem(
+              value: ChartNormalization.raw,
+              child: Text('Raw values'),
+            ),
+            DropdownMenuItem(
+              value: ChartNormalization.perFeature,
+              child: Text('Normalize [-1.0, 1.0]'),
+            ),
+            DropdownMenuItem(
+              value: ChartNormalization.logicToVisibleMax,
+              child: Text('Logic → visible max'),
+            ),
+          ],
+          onChanged: (value) {
+            if (value != null) state.setNormalization(value);
+          },
+        ),
+        const SizedBox(height: 8),
+        const Text(
+          'Logic → visible max scales logical 1 to the largest raw amplitude '
+          'in the visible sample range. Raw signals keep their values. '
+          'With no raw amplitude, logic stays at 0/1.',
+          style: TextStyle(fontSize: 10.5, color: Color(0xFF788593)),
         ),
         const Divider(height: 30),
 
@@ -4073,6 +4104,7 @@ class _ChartAreaState extends State<ChartArea> {
   double _prepareProgress = 0;
   int _preparedPointCount = 0;
   Map<String, List<ChartSample>> _prepared = const {};
+  double _visibleRawMaximum = 0.0;
 
   // header -> block size -> min/max representation for the entire column.
   // These levels are built lazily and reused during pan/zoom.
@@ -4154,6 +4186,7 @@ class _ChartAreaState extends State<ChartArea> {
       _visibleStart = 0;
       _visibleEnd = max(0, csv.rowCount - 1).toDouble();
       _prepared = const {};
+      _visibleRawMaximum = 0.0;
       _clearLevelCache();
       _lastRenderKey = '';
       WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -4166,6 +4199,7 @@ class _ChartAreaState extends State<ChartArea> {
       _renderDebounce?.cancel();
       _preparing = false;
       _prepared = const {};
+      _visibleRawMaximum = 0.0;
       _lastDataRevision = dataRevision;
       _clearLevelCache();
       _lastRenderKey = '';
@@ -4324,7 +4358,11 @@ class _ChartAreaState extends State<ChartArea> {
                         ),
                         primaryYAxis: NumericAxis(
                           title: AxisTitle(
-                            text: state.isNormalized ? 'NORMALIZED' : 'RAW VALUE',
+                            text: state.isNormalized
+                                ? 'NORMALIZED'
+                                : state.normalization == ChartNormalization.logicToVisibleMax
+                                    ? 'RAW VALUE • LOGIC SCALED'
+                                    : 'RAW VALUE',
                             textStyle: const TextStyle(
                               color: Color(0xFF697684),
                               fontSize: 10.5,
@@ -4404,7 +4442,8 @@ class _ChartAreaState extends State<ChartArea> {
     final start = _visibleStart.floor().clamp(0, max(0, csv.rowCount - 1)).toInt();
     final end = _visibleEnd.ceil().clamp(0, max(0, csv.rowCount - 1)).toInt();
     final key = '${identityHashCode(csv)}|$dataRevision|$featureRevision|'
-        '$start|$end|${width.round()}|${headers.length}';
+        '$start|$end|${width.round()}|${headers.length}|'
+        '${state.normalization == ChartNormalization.logicToVisibleMax}';
     if (key == _lastRenderKey) return;
     _lastRenderKey = key;
     _renderDebounce?.cancel();
@@ -4450,11 +4489,33 @@ class _ChartAreaState extends State<ChartArea> {
 
     final next = <String, List<ChartSample>>{};
     var totalPoints = 0;
+    var visibleRawMaximum = 0.0;
     for (var i = 0; i < headers.length; i++) {
       if (token != _renderToken) return;
       final header = headers[i];
       final raw = csv.data[header];
       if (raw == null || raw.isEmpty) continue;
+      if (state.normalization == ChartNormalization.logicToVisibleMax &&
+          !csv.logicalHeaders.contains(header)) {
+        if (safeStart == 0 && safeEnd == raw.length - 1) {
+          // Reuse parser metadata for the full recording; no extra scan.
+          visibleRawMaximum = max(
+            visibleRawMaximum,
+            max(csv.minimumFor(header).abs(), csv.maximumFor(header).abs()),
+          );
+        } else {
+          // Use original samples, including extrema in partially visible
+          // decimation buckets. Yield so large views do not block the UI.
+          for (var offset = safeStart; offset <= safeEnd; offset += 32768) {
+            visibleRawMaximum = max(
+              visibleRawMaximum,
+              maximumAbsoluteValue(raw, offset, min(safeEnd, offset + 32767)),
+            );
+            await Future<void>.delayed(Duration.zero);
+            if (token != _renderToken) return;
+          }
+        }
+      }
       final logicalRanges = state.logicalRangesFor(header);
       final samples = await _samplesForViewport(
         header,
@@ -4480,6 +4541,7 @@ class _ChartAreaState extends State<ChartArea> {
     if (!mounted || token != _renderToken) return;
     setState(() {
       _prepared = next;
+      _visibleRawMaximum = visibleRawMaximum;
       _preparedPointCount = totalPoints;
       _prepareProgress = 1;
       _preparing = false;
@@ -4767,8 +4829,13 @@ class _ChartAreaState extends State<ChartArea> {
           name: header,
           dataSource: samples,
           xValueMapper: (sample, _) => sample.x,
-          yValueMapper: (sample, _) =>
-              state.isNormalized ? sample.y / scale : sample.y,
+          yValueMapper: (sample, _) => normalizedChartValue(
+            sample.y,
+            mode: state.normalization,
+            isLogical: csv.logicalHeaders.contains(header),
+            featureMaximum: scale,
+            visibleRawMaximum: _visibleRawMaximum,
+          ),
           color: _chartPalette[i % _chartPalette.length],
           width: 1.25,
           animationDuration: 0,
